@@ -1,0 +1,45 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.sriram1983007-dev/sra-riskgate-mcp",
+  "title": "SRA-RiskGate",
+  "description": "Check stablecoin and x402 payments before an AI agent pays: approve, hold or reject.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/sriram1983007-dev/sra-riskgate-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "sra-riskgate-mcp",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SRA_BASE_URL",
+          "description": "OpenAI-compatible endpoint serving SRA-RiskGate-4B (default: Ollama at http://localhost:11434/v1)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_MODEL",
+          "description": "Model name on that endpoint (default: sriram1983007/sra-riskgate)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_MAX_AMOUNT",
+          "description": "Rule ceiling in USDC; larger payments are held (default: 1000)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}
