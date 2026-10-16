@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+- Every tool parameter now has a description (units, formats and examples), so agents fill in
+  arguments correctly: for example that `amount_usdc` is whole USDC while x402 `amount` is in atomic
+  units, and that `untrusted_text` must never contain your own verification results.
+- The server reports its version (and, on mcp 2.x, its title and website) in `serverInfo`; it was blank.
+- No behaviour changes: every decision is the same as in 0.3.0.
+
 ## 0.3.0
 - `check_payment_rules` and `check_x402_payment` take an optional `untrusted_text` (the payment's memo,
   invoice, description or x402 `extra`, as a string, object or list). If it claims its own verification

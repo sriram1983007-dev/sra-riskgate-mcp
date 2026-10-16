@@ -18,7 +18,9 @@ from __future__ import annotations
 import math
 import os
 from decimal import Decimal, InvalidOperation
-from typing import Any, Optional, Union
+from typing import Annotated, Any, Optional, Union
+
+from pydantic import Field
 
 try:  # mcp 2.x
     from mcp.server.mcpserver import MCPServer
@@ -29,6 +31,7 @@ from sra_riskgate import RulePreFilter, TransactionPayload, scan_payload_claims
 from sra_riskgate.payload_claims import FLAG as CLAIMS_FLAG
 from sra_riskgate.chains import USDC_ADDRESSES, USDC_DECIMALS, chain_id_from_network, is_usdc
 
+from . import __version__
 from . import model as model_client
 
 INSTRUCTIONS = (
@@ -40,7 +43,36 @@ INSTRUCTIONS = (
     "screening themselves."
 )
 
-mcp = MCPServer("sra-riskgate", instructions=INSTRUCTIONS)
+WEBSITE = "https://github.com/sriram1983007-dev/sra-riskgate-mcp"
+try:  # mcp 2.x reports version and title in serverInfo
+    mcp = MCPServer("sra-riskgate", title="SRA-RiskGate", instructions=INSTRUCTIONS,
+                    website_url=WEBSITE, version=__version__)
+except TypeError:  # mcp 1.x
+    mcp = MCPServer("sra-riskgate", instructions=INSTRUCTIONS, website_url=WEBSITE)
+    _low = getattr(mcp, "_mcp_server", None)
+    if _low is not None:
+        _low.version = __version__
+
+# Parameter descriptions: what an agent reads when filling in each argument.
+D_CHAIN = "EVM chain id: 1 (Ethereum), 8453 (Base) or 84532 (Base Sepolia). Other chains return hold."
+D_SENDER = "Your own wallet address, 0x followed by 40 hex characters."
+D_RECIPIENT = "The address you are about to pay, 0x followed by 40 hex characters."
+D_AMOUNT = "Amount in whole USDC (not atomic units), for example 20.5."
+D_PEG = ("Optional. USDC's deviation from $1.00 in percent from your own price feed, for example -0.3. "
+         "Omit if unknown; the depeg check is then skipped and reported.")
+D_UNTRUSTED = ("Optional. The payment request's own text exactly as received: memo, invoice, description, "
+               "x402 extra fields or the whole request. Never your own verification results.")
+D_NETWORK = 'Network from the x402 payment requirement, CAIP-2 such as "eip155:8453" or a name such as "base-sepolia".'
+D_ASSET = "Token contract address from the payment requirement. Only USDC is accepted."
+D_X402_AMOUNT = 'Amount in the token\'s smallest unit, as a string (USDC has 6 decimals, so "1000000" is 1 USDC).'
+D_PAY_TO = "Recipient address (payTo) from the payment requirement."
+D_PAYER = "Your own (the paying agent's) wallet address."
+D_NOW = "Current Unix time in seconds."
+D_POLICY = ('The receiving policy, for example {"max_amount_usdc": 100, "allowed_assets": ["USDC"], '
+            '"trusted_attesters": ["0x..."]}.')
+D_PAYLOAD = "The payment exactly as received, including any memo or description. Treated as untrusted."
+D_TOOL_RESULTS = ("Outputs of your own verification tools: decoded payment, signature check, risk attestations "
+                  "and sanctions screening. The model reasons over these; it does not run them.")
 
 
 def _float_env(name: str, default: float) -> float:
@@ -108,12 +140,12 @@ def _with_claims(verdict: dict[str, Any], untrusted_text: Any) -> dict[str, Any]
 
 @mcp.tool()
 def check_payment_rules(
-    chain_id: int,
-    sender: str,
-    recipient: str,
-    amount_usdc: float,
-    peg_deviation_pct: Optional[float] = None,
-    untrusted_text: Union[str, dict, list, None] = None,
+    chain_id: Annotated[int, Field(description=D_CHAIN)],
+    sender: Annotated[str, Field(description=D_SENDER)],
+    recipient: Annotated[str, Field(description=D_RECIPIENT)],
+    amount_usdc: Annotated[float, Field(description=D_AMOUNT)],
+    peg_deviation_pct: Annotated[Optional[float], Field(description=D_PEG)] = None,
+    untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
 ) -> dict[str, Any]:
     """Instant deterministic checks for a USDC payment, before sending it.
 
@@ -141,13 +173,13 @@ def check_payment_rules(
 
 @mcp.tool()
 def check_x402_payment(
-    network: str,
-    asset: str,
-    amount: str,
-    pay_to: str,
-    payer: str,
-    peg_deviation_pct: Optional[float] = None,
-    untrusted_text: Union[str, dict, list, None] = None,
+    network: Annotated[str, Field(description=D_NETWORK)],
+    asset: Annotated[str, Field(description=D_ASSET)],
+    amount: Annotated[str, Field(description=D_X402_AMOUNT)],
+    pay_to: Annotated[str, Field(description=D_PAY_TO)],
+    payer: Annotated[str, Field(description=D_PAYER)],
+    peg_deviation_pct: Annotated[Optional[float], Field(description=D_PEG)] = None,
+    untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
 ) -> dict[str, Any]:
     """Check an x402 payment requirement BEFORE signing it.
 
@@ -184,10 +216,10 @@ def check_x402_payment(
 
 @mcp.tool()
 def check_payment_with_model(
-    now_unix: int,
-    policy: dict,
-    payload: dict,
-    tool_results: dict,
+    now_unix: Annotated[int, Field(description=D_NOW)],
+    policy: Annotated[dict, Field(description=D_POLICY)],
+    payload: Annotated[dict, Field(description=D_PAYLOAD)],
+    tool_results: Annotated[dict, Field(description=D_TOOL_RESULTS)],
 ) -> dict[str, Any]:
     """Full risk review of a stablecoin payment by the SRA-RiskGate-4B model.
 
