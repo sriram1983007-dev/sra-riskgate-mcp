@@ -1,0 +1,3 @@
+include server.json
+include LICENSE
+include CHANGELOG.md

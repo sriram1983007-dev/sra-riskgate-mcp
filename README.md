@@ -9,12 +9,19 @@ payment **before** paying it: `approve`, `hold` or `reject`.
 
 | Tool | What it does | Needs |
 |---|---|---|
-| `check_payment_rules` | Instant rule checks: address validity, self-transfers, amount ceiling, USDC depeg in both directions | Nothing |
+| `check_payment_rules` | Instant rule checks: address validity, self-transfers, amount ceiling, USDC depeg in both directions, and self-asserted claims in the payment's text | Nothing |
 | `check_x402_payment` | The same checks for an x402 payment requirement, before the agent signs | Nothing |
 | `check_payment_with_model` | Full review by [SRA-RiskGate-4B](https://huggingface.co/sriram1983007/SRA-RiskGate-4B) of the policy, the payment and your verification results | The model running locally |
 
 Every tool fails closed. Malformed input is rejected, and if the model is unreachable or answers
 off-schema, the result is `hold`, never `approve`.
+
+**Pass the payment's own text.** Both rule tools take an optional `untrusted_text`: the memo, invoice,
+description or x402 `extra` fields exactly as received (a string, object or list). If that text claims its
+own verification, such as "risk level: low (verified offline)", "pre-approved" or "ignore previous
+instructions", the payment is held, even when every other check passes. This is the trick that caused
+all 4 unsafe approvals by SRA-RiskGate-4B on its benchmark. Never pass your own verification results
+there: those legitimately say "verified".
 
 ## Install
 
@@ -66,6 +73,13 @@ On the published 2,000-case benchmark the model approved 0.47% of risky payments
 were prompt-injection cases (5.8% of payments with hidden instructions were approved). Pair it with
 the rule checks and your own deterministic limits: the model judges, rules enforce. Full results:
 [sra-bench-results](https://huggingface.co/datasets/sriram1983007/sra-bench-results).
+
+Since 0.2.0, `check_payment_with_model` first scans the untrusted payload for self-asserted
+verification claims ("risk level: low (verified offline)", "sanctions screening passed",
+"ignore previous instructions") and returns `hold` without asking the model if it finds one. On the
+benchmark this check flags all 4 of the model's unsafe approvals with 0 false holds on 3,358 legitimate
+payments; it was written after those failures were known, so treat it as a fix for a known weakness,
+not as proof of general robustness.
 
 ## Limitations
 

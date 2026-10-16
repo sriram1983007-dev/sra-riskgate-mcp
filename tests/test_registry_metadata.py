@@ -3,7 +3,11 @@ import json
 import pathlib
 import re
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+if not (ROOT / "server.json").exists() or not (ROOT / "pyproject.toml").exists():
+    pytest.skip("registry metadata files are only checked in a full source checkout", allow_module_level=True)
 
 
 def _pyproject_version():

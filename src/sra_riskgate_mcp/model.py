@@ -83,6 +83,13 @@ def parse_verdict(text: str) -> dict[str, Any] | None:
 
 
 def check_payment(now_unix: int, policy: dict, payload: dict, tool_results: dict) -> dict[str, Any]:
+    try:
+        return _check_payment(now_unix, policy, payload, tool_results)
+    except Exception as e:  # bad SRA_TIMEOUT, absurd now_unix, unserialisable input...: never raise
+        return fail_closed("model_unavailable", f"{type(e).__name__}: {e}")
+
+
+def _check_payment(now_unix: int, policy: dict, payload: dict, tool_results: dict) -> dict[str, Any]:
     cfg = settings()
     body = json.dumps({
         "model": cfg["model"],
