@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0
+- New tool `check_address_sanctions`: exact, offline match of up to 100 EVM addresses against the OFAC SDN
+  snapshot bundled with `sra-riskgate` (124 addresses, as of 2026-10-01). Returns listed / not listed /
+  invalid plus the list's source and date. Fails closed: if the list cannot load, nothing is reported as
+  "not listed".
+- Requires `sra-riskgate>=0.7.1`, so `check_payment_rules` and `check_x402_payment` always **reject**
+  payments to or from listed addresses (`OFAC_SDN_MATCH`) and reject USDC amounts below one atomic unit.
+  With older SDK versions installed these checks were silently missing.
+- Security: `SRA_BASE_URL` must be `http://` or `https://`; any other scheme (for example `file:`) now gives
+  `hold` with `configuration_error` instead of being opened.
+- Tool descriptions mention the OFAC match.
+
 ## 0.3.1
 - Every tool parameter now has a description (units, formats and examples), so agents fill in
   arguments correctly: for example that `amount_usdc` is whole USDC while x402 `amount` is in atomic

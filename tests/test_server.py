@@ -27,7 +27,7 @@ def call(tool, args):
 # ------------------------------------------------------------------ registration
 def test_tools_are_registered_with_descriptions():
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
-    assert set(tools) == {"check_payment_rules", "check_x402_payment", "check_payment_with_model"}
+    assert set(tools) == {"check_address_sanctions", "check_payment_rules", "check_x402_payment", "check_payment_with_model"}
     for t in tools.values():
         assert "approve" in t.description
 
@@ -280,3 +280,56 @@ def test_untrusted_text_is_in_tool_schemas():
         schema = getattr(tools[name], "inputSchema", None) or getattr(tools[name], "input_schema")  # mcp 1.x / 2.x
         assert "untrusted_text" in schema["properties"]
         assert "untrusted_text" not in schema.get("required", [])
+
+
+
+# ------------------------------------------------------------------ 0.4.0: sanctions tool, URL scheme
+from sra_riskgate import SanctionsList  # noqa: E402
+
+LISTED = sorted(SanctionsList.bundled().addresses)[0]
+
+
+def test_sanctions_tool_reports_listed_clear_and_invalid():
+    r = call("check_address_sanctions", {"addresses": [LISTED.upper().replace("0X", "0x"), YOU, "0xbad", ""]})
+    assert r["listed"] == [LISTED] and r["not_listed"] == [YOU] and r["invalid"] == ["0xbad", ""]
+    assert r["any_listed"] is True and "do_not_pay" in r["required_actions"]
+    assert r["sanctions_list"]["size"] >= 100 and r["sanctions_list"]["as_of"] != "unknown"
+    assert "not a sanctions screening service" in r["note"].lower()
+
+
+def test_sanctions_tool_clean_addresses():
+    r = call("check_address_sanctions", {"addresses": [ME, YOU]})
+    assert r["listed"] == [] and r["any_listed"] is False and r["required_actions"] == []
+
+
+def test_sanctions_tool_limits_input():
+    r = call("check_address_sanctions", {"addresses": [YOU] * 101})
+    assert r.get("check_failed") is True and r["listed"] == []
+
+
+def test_sanctions_tool_fails_closed(monkeypatch):
+    def boom(cls):
+        raise OSError("list missing")
+    monkeypatch.setattr(server.SanctionsList, "bundled", classmethod(boom))
+    r = call("check_address_sanctions", {"addresses": [YOU]})
+    assert r.get("check_failed") is True and r["not_listed"] == [] and "do_not_pay" in r["required_actions"]
+
+
+def test_rules_tools_reject_sanctioned_counterparty():
+    r = call("check_payment_rules", dict(chain_id=8453, sender=ME, recipient=LISTED, amount_usdc=20))
+    assert r["decision"] == "reject" and "OFAC_SDN_MATCH" in r["flags"]
+    r = call("check_x402_payment", dict(network="eip155:8453", asset=USDC_ADDRESSES[8453], amount="1000000",
+                                        pay_to=LISTED, payer=ME))
+    assert r["decision"] == "reject" and "OFAC_SDN_MATCH" in r["flags"]
+
+
+def test_rules_tool_rejects_dust():
+    r = call("check_payment_rules", dict(chain_id=8453, sender=ME, recipient=YOU, amount_usdc=1e-7))
+    assert r["decision"] == "reject"
+
+
+@pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://host/v1", "gopher://x", "javascript:alert(1)"])
+def test_model_refuses_non_http_base_url(monkeypatch, url):
+    monkeypatch.setenv("SRA_BASE_URL", url)
+    r = model_client.check_payment(1793064149, {}, {"memo": "Invoice 42"}, {})
+    assert r["decision"] == "hold" and r["flags"] == ["configuration_error"]

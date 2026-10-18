@@ -91,6 +91,10 @@ def check_payment(now_unix: int, policy: dict, payload: dict, tool_results: dict
 
 def _check_payment(now_unix: int, policy: dict, payload: dict, tool_results: dict) -> dict[str, Any]:
     cfg = settings()
+    scheme = cfg["base_url"].strip().lower().split(":", 1)[0]
+    if scheme not in ("http", "https"):
+        return fail_closed("configuration_error",
+                           "SRA_BASE_URL must be an http:// or https:// URL; other schemes are refused.")
     body = json.dumps({
         "model": cfg["model"],
         "temperature": 0,
