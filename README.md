@@ -30,6 +30,14 @@ before a payment exists. The list is a dated snapshot bundled with `sra-riskgate
 offline. "Not listed" is not a compliance clearance: it does not trace funds or ownership, and addresses
 added after the snapshot date are not included.
 
+**Who is on the other side.** Since 0.5.0 (with `sra-riskgate` 0.8.0+), you can give the server the
+payees you have already verified (`SRA_KNOWN_RECIPIENTS`). A payment to anyone else is then held with
+`NEW_COUNTERPARTY`, the usual first step in "our bank details have changed" fraud. Addresses on your
+blocklist (`SRA_BLOCKED_ADDRESSES`, or the tools' `blocked_addresses` argument) are always rejected.
+Known payees come **only from the server's configuration**, never from tool arguments or payment text:
+an agent whose input has been tampered with cannot declare an attacker's address "known". The
+blocklist argument is safe for agents to use because it can only make a decision stricter.
+
 ## Install
 
 Add it to your MCP client's configuration (Claude Desktop, Cursor and others):
@@ -63,8 +71,27 @@ ollama pull sriram1983007/sra-riskgate
 | `SRA_TIMEOUT` | `120` | Seconds to wait for the model |
 | `SRA_MAX_AMOUNT` | `1000` | Rule ceiling in USDC; larger payments are held |
 | `SRA_DEPEG_HOLD_PCT` / `SRA_DEPEG_REJECT_PCT` | `1` / `5` | USDC depeg thresholds in percent |
+| `SRA_KNOWN_RECIPIENTS` | unset (check off) | Verified payees, comma- or space-separated. Payments to anyone else are held (`NEW_COUNTERPARTY`). Set but empty: every payment is held |
+| `SRA_KNOWN_RECIPIENTS_FILE` | unset | A file with one verified payee per line (`#` comments allowed), added to the list above |
+| `SRA_BLOCKED_ADDRESSES` / `SRA_BLOCKED_ADDRESSES_FILE` | unset | Addresses to always reject, same formats |
+
+A malformed address or an unreadable file in any of these gives `reject` with `configuration_error`, so a
+typo can never silently weaken a check. Example:
+
+```json
+"env": {
+  "SRA_KNOWN_RECIPIENTS_FILE": "/Users/me/payees.txt",
+  "SRA_BLOCKED_ADDRESSES": "0xbad0000000000000000000000000000000000001"
+}
+```
 
 Set them in the `env` block of your MCP client configuration.
+
+## Tool annotations
+
+Every tool declares MCP tool annotations, so clients know none of them sends, signs or changes anything:
+`readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`. `openWorldHint` is `true` only for
+`check_payment_with_model`, which calls your model endpoint; the other three run entirely offline.
 
 ## How agents should use it
 
