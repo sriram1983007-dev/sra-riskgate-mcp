@@ -3,7 +3,7 @@
   "name": "io.github.sriram1983007-dev/sra-riskgate-mcp",
   "title": "SRA-RiskGate",
   "description": "Check stablecoin and x402 payments before an AI agent pays: approve, hold or reject.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "repository": {
     "url": "https://github.com/sriram1983007-dev/sra-riskgate-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "sra-riskgate-mcp",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -35,6 +35,34 @@
         {
           "name": "SRA_MAX_AMOUNT",
           "description": "Rule ceiling in USDC; larger payments are held (default: 1000)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_KNOWN_RECIPIENTS",
+          "description": "Verified payee addresses, comma-separated; payments to anyone else are held (default: check off)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_KNOWN_RECIPIENTS_FILE",
+          "description": "File with one verified payee address per line, added to SRA_KNOWN_RECIPIENTS",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_BLOCKED_ADDRESSES",
+          "description": "Addresses to always reject, comma-separated",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_BLOCKED_ADDRESSES_FILE",
+          "description": "File with one address to reject per line, added to SRA_BLOCKED_ADDRESSES",
           "isRequired": false,
           "format": "string",
           "isSecret": false

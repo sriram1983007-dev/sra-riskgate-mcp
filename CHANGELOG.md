@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.0 — 2026-10-21
+Counterparty policy from `sra-riskgate` 0.8.0, and MCP tool annotations. Unless you set the new
+variables, decisions change only in the two stricter cases listed under "Changed".
+
+### Added
+- Known payees: set `SRA_KNOWN_RECIPIENTS` (comma- or space-separated) or `SRA_KNOWN_RECIPIENTS_FILE`
+  (one per line). `check_payment_rules` and `check_x402_payment` then **hold** a payment to any other
+  recipient (`NEW_COUNTERPARTY`). Known payees come only from server configuration, never from tool
+  arguments, so an agent whose input was tampered with cannot mark an attacker's address as known.
+- Blocklist: `SRA_BLOCKED_ADDRESSES` / `SRA_BLOCKED_ADDRESSES_FILE`, plus an optional `blocked_addresses`
+  argument on both rule tools (it can only add to the list). A payment from or to a listed address is
+  **rejected** (`BLOCKLISTED_ADDRESS`).
+- Tool annotations on all four tools: read-only, non-destructive, idempotent; `openWorldHint` is true only
+  for `check_payment_with_model`.
+- `check_address_sanctions` reports the list's age (`sanctions_list.age_days`). Rule results carry the
+  SDK's informational `SANCTIONS_LIST_STALE` flag once the bundled list is more than 90 days old.
+
+### Changed
+- Sanctions and blocklist matches are checked first. A sanctioned counterparty on an unsupported chain is
+  now `reject` (`OFAC_SDN_MATCH`) instead of `hold` (`unsupported_chain`), and in `check_x402_payment` it
+  is reported as `OFAC_SDN_MATCH` instead of `unsupported_asset` (still `reject`).
+- A malformed or unreadable address list gives `reject` with `configuration_error`; a malformed
+  `blocked_addresses` argument gives `reject` with `invalid_arguments`.
+- Requires `sra-riskgate>=0.8.0` and `mcp>=1.22`. The old `mcp>=1.2` floor was wrong: releases before
+  1.22 fail to import with current pydantic. CI now also tests `mcp==1.22.0`.
+- The source distribution includes `tests/conftest.py`.
+
 ## 0.4.0
 - New tool `check_address_sanctions`: exact, offline match of up to 100 EVM addresses against the OFAC SDN
   snapshot bundled with `sra-riskgate` (124 addresses, as of 2026-10-01). Returns listed / not listed /
