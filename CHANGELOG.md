@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1 — 2026-10-22
+### Fixed
+- `check_payment_with_model` now sends a `User-Agent: sra-riskgate-mcp/<version>` header. Some proxies in
+  front of hosted GPUs refuse Python's default `Python-urllib/3.x` identity with HTTP 403; a vLLM Pod on
+  Runpod is one (found while testing the vLLM command from the model card). Before this fix every check
+  against such a server was held with `model_unavailable`, so nothing was unsafe, but the model tool could
+  not be used there.
+
 ## 0.5.0 — 2026-10-21
 Counterparty policy from `sra-riskgate` 0.8.0, and MCP tool annotations. Unless you set the new
 variables, decisions change only in the two stricter cases listed under "Changed".
