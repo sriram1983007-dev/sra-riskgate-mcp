@@ -90,11 +90,13 @@ class FakeModel(BaseHTTPRequestHandler):
     reply = json.dumps(GOOD)
     status = 200
     last_request = None
+    last_headers = None
 
     def log_message(self, *a):
         pass
 
     def do_POST(self):
+        FakeModel.last_headers = dict(self.headers)
         FakeModel.last_request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.send_response(FakeModel.status)
         self.send_header("Content-Type", "application/json")
@@ -333,3 +335,10 @@ def test_model_refuses_non_http_base_url(monkeypatch, url):
     monkeypatch.setenv("SRA_BASE_URL", url)
     r = model_client.check_payment(1793064149, {}, {"memo": "Invoice 42"}, {})
     assert r["decision"] == "hold" and r["flags"] == ["configuration_error"]
+
+
+def test_model_client_sends_its_own_user_agent(fake_model):
+    # Runpod's proxy returns 403 to Python's default "Python-urllib/3.x" User-Agent.
+    call("check_payment_with_model", MODEL_ARGS)
+    ua = fake_model.last_headers["User-Agent"]
+    assert ua == f"sra-riskgate-mcp/{model_client.__version__}" and "urllib" not in ua.lower()

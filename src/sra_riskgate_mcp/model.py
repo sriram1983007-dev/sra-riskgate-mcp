@@ -11,6 +11,12 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+from . import __version__
+
+# Some proxies in front of hosted GPUs (Runpod's Pod proxy, for one) refuse Python's default
+# "Python-urllib/3.x" User-Agent with HTTP 403, so identify the client explicitly.
+USER_AGENT = f"sra-riskgate-mcp/{__version__}"
+
 # The exact system prompt SRA-RiskGate-4B was trained with for payment risk gating.
 PAYMENT_SYSTEM_PROMPT = (
     "You are a stablecoin payment risk gate. Evaluate the payment using the policy, the payload "
@@ -107,7 +113,8 @@ def _check_payment(now_unix: int, policy: dict, payload: dict, tool_results: dic
     req = urllib.request.Request(
         cfg["base_url"].rstrip("/") + "/chat/completions",
         data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {cfg['api_key']}"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {cfg['api_key']}",
+                 "User-Agent": USER_AGENT},
     )
     try:
         with urllib.request.urlopen(req, timeout=cfg["timeout"]) as resp:
