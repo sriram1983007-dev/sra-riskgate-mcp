@@ -12,17 +12,26 @@ payment **before** paying it: `approve`, `hold` or `reject`.
 | `check_address_sanctions` | Exact, offline match of up to 100 addresses against OFAC's published SDN crypto addresses (bundled, dated snapshot) | Nothing |
 | `check_payment_rules` | Instant rule checks: OFAC SDN address match, address validity, self-transfers, amount ceiling, USDC depeg in both directions, and self-asserted claims in the payment's text | Nothing |
 | `check_x402_payment` | The same checks for an x402 payment requirement, before the agent signs | Nothing |
+| `check_transaction` | The same checks for the exact transaction the agent is about to sign (`to`, calldata, `value`); token approvals, other functions, other contracts and native ETH are held | Nothing |
 | `check_payment_with_model` | Full review by [SRA-RiskGate-4B](https://huggingface.co/sriram1983007/SRA-RiskGate-4B) of the policy, the payment and your verification results | The model running locally |
 
 Every tool fails closed. Malformed input is rejected, and if the model is unreachable or answers
 off-schema, the result is `hold`, never `approve`.
 
-**Pass the payment's own text.** Both rule tools take an optional `untrusted_text`: the memo, invoice,
+**Pass the payment's own text.** The rule tools take an optional `untrusted_text`: the memo, invoice,
 description or x402 `extra` fields exactly as received (a string, object or list). If that text claims its
 own verification, such as "risk level: low (verified offline)", "pre-approved" or "ignore previous
 instructions", the payment is held, even when every other check passes. This is the trick that caused
 all 4 unsafe approvals by SRA-RiskGate-4B on its benchmark. Never pass your own verification results
 there: those legitimately say "verified".
+
+**Check what will actually be signed.** Since 0.6.0 (with `sra-riskgate` 0.9.0+), `check_transaction` takes
+the transaction itself: the contract it calls (`to`), its calldata (`data`) and its native `value`. A
+plain USDC `transfer` is decoded (the result includes the recipient and amount) and gets every check of
+`check_payment_rules`. Anything else is held: `approve`, `increaseAllowance` and `permit`
+(`TOKEN_APPROVAL`, plus `UNLIMITED_APPROVAL`), which let someone else move the wallet's USDC later;
+other functions such as `transferFrom`; a contract that is not USDC on that chain; native ETH; and
+malformed calldata. Use it whenever the agent has the transaction, not just a description of the payment.
 
 **Sanctioned addresses.** Since 0.4.0 (with `sra-riskgate` 0.7.1+), both rule tools **reject** any payment
 to or from an address on the OFAC SDN list, and `check_address_sanctions` checks addresses on their own,
@@ -91,7 +100,7 @@ Set them in the `env` block of your MCP client configuration.
 
 Every tool declares MCP tool annotations, so clients know none of them sends, signs or changes anything:
 `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`. `openWorldHint` is `true` only for
-`check_payment_with_model`, which calls your model endpoint; the other three run entirely offline.
+`check_payment_with_model`, which calls your model endpoint; the other four run entirely offline.
 
 ## How agents should use it
 
