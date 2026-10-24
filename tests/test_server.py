@@ -27,7 +27,7 @@ def call(tool, args):
 # ------------------------------------------------------------------ registration
 def test_tools_are_registered_with_descriptions():
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
-    assert set(tools) == {"check_address_sanctions", "check_payment_rules", "check_x402_payment", "check_payment_with_model"}
+    assert set(tools) == {"check_address_sanctions", "check_payment_rules", "check_x402_payment", "check_transaction", "check_payment_with_model"}
     for t in tools.values():
         assert "approve" in t.description
 

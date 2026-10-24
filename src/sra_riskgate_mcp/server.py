@@ -4,6 +4,7 @@ Tools:
   check_address_sanctions    exact match of addresses against the bundled OFAC SDN snapshot
   check_payment_rules        instant deterministic rule checks (no model, no GPU)
   check_x402_payment         rule checks for an x402 payment requirement, before an agent signs
+  check_transaction          rule checks for the exact transaction (to, calldata, value) before signing it
   check_payment_with_model   full review by SRA-RiskGate-4B via a local OpenAI-compatible server
 
 Configuration (environment variables):
@@ -36,7 +37,8 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as MCPServer
 
-from sra_riskgate import RulePreFilter, SanctionsList, TransactionPayload, scan_payload_claims
+from sra_riskgate import (RulePreFilter, SanctionsList, TransactionPayload, check_transaction as sdk_check_transaction,
+                          decode_erc20_transfer, scan_payload_claims)
 from sra_riskgate.counterparty import parse_address_list
 from sra_riskgate.payload_claims import FLAG as CLAIMS_FLAG
 from sra_riskgate.chains import USDC_ADDRESSES, USDC_DECIMALS, chain_id_from_network, is_usdc
@@ -84,6 +86,10 @@ D_PAY_TO = "Recipient address (payTo) from the payment requirement."
 D_PAYER = "Your own (the paying agent's) wallet address."
 D_BLOCKED = ("Optional. Extra addresses to reject for this payment, on top of the server's configured "
              "blocklist, for example addresses a human told you never to pay. Can only make the check stricter.")
+D_TX_TO = "The transaction's 'to' address: the contract the transaction calls. For a USDC payment, the USDC contract."
+D_TX_DATA = ("The transaction's calldata exactly as it will be signed, hex starting with 0x. For a USDC payment, "
+             "transfer(recipient, amount): 0xa9059cbb followed by two 32-byte words.")
+D_TX_VALUE = "Native ETH the transaction sends, in wei, as an integer or string (decimal or 0x hex). Default 0."
 D_NOW = "Current Unix time in seconds."
 D_POLICY = ('The receiving policy, for example {"max_amount_usdc": 100, "allowed_assets": ["USDC"], '
             '"trusted_attesters": ["0x..."]}.')
@@ -354,6 +360,56 @@ def check_x402_payment(
     verdict = _rules_verdict(chain_id, payer, pay_to, float(usdc), peg_deviation_pct, blocked)
     verdict["amount_usdc"] = str(usdc)
     return _with_claims(verdict, untrusted_text)
+
+
+@mcp.tool(annotations=CHECK_ONLY)
+def check_transaction(
+    chain_id: Annotated[int, Field(description=D_CHAIN)],
+    sender: Annotated[str, Field(description=D_SENDER)],
+    to: Annotated[str, Field(description=D_TX_TO)],
+    data: Annotated[str, Field(description=D_TX_DATA)],
+    value: Annotated[Union[int, str], Field(description=D_TX_VALUE)] = 0,
+    peg_deviation_pct: Annotated[Optional[float], Field(description=D_PEG)] = None,
+    untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
+    blocked_addresses: Annotated[Optional[list[str]], Field(description=D_BLOCKED)] = None,
+) -> dict[str, Any]:
+    """Check the exact transaction you are about to sign: the contract it calls, its calldata and value.
+
+    Use this instead of check_payment_rules when you have the transaction itself, so the check covers
+    what will actually be signed, not a description of it. A plain USDC transfer() is decoded and gets
+    the same checks as check_payment_rules (OFAC SDN match, blocklist, known payees, amount ceiling,
+    depeg, self-asserted claims in untrusted_text).
+
+    Everything else is held: token approvals (approve, increaseAllowance, permit: flag TOKEN_APPROVAL,
+    plus UNLIMITED_APPROVAL), other functions such as transferFrom (UNSUPPORTED_FUNCTION), a contract
+    that is not USDC on that chain (UNSUPPORTED_ASSET), native ETH (NATIVE_VALUE_TRANSFER) and malformed
+    calldata (INVALID_TRANSACTION). An approval lets someone else move the wallet's USDC later.
+
+    Only Ethereum (1), Base (8453) and Base Sepolia (84532) are supported.
+    Returns decision (approve | hold | reject), flags, explanation and required_actions; for a
+    transfer, also the decoded recipient and amount. Only sign if decision is "approve".
+    """
+    blocked, bad = _parse_blocked_arg(blocked_addresses)
+    if bad:
+        return bad
+    try:
+        gate = _gate()
+    except Exception as e:
+        return _config_error(e)
+    try:
+        v = sdk_check_transaction({"to": to, "data": data, "value": value}, chain_id=chain_id, sender=sender,
+                                  gate=gate, blocked_addresses=blocked, peg_deviation_pct=peg_deviation_pct,
+                                  untrusted_request=untrusted_text)
+        out = {**v.model_dump(mode="json"), "source": "rules"}
+        decoded = decode_erc20_transfer(data)
+        if decoded is not None:
+            out["decoded"] = {"recipient": decoded[0],
+                              "amount_usdc": str(Decimal(decoded[1]) / (Decimal(10) ** USDC_DECIMALS))}
+        return out
+    except Exception as e:  # fail closed
+        return {"decision": "hold", "risk_score": 0.65, "flags": ["check_failed"],
+                "explanation": f"The transaction check failed ({type(e).__name__}), so it is held.",
+                "required_actions": ["manual_review"], "source": "rules"}
 
 
 @mcp.tool(annotations=CHECK_WITH_MODEL)

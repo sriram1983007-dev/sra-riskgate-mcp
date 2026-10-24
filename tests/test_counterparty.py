@@ -155,9 +155,9 @@ def _annotations(tool):
     return a.model_dump(by_alias=True, exclude_none=True) if a is not None else {}
 
 
-def test_every_tool_declares_all_four_hints():
+def test_every_tool_declares_all_four_hints():  # every tool, all four hints
     tools = {t.name: _annotations(t) for t in asyncio.run(server.mcp.list_tools())}
-    assert len(tools) == 4
+    assert len(tools) == 5
     for name, a in tools.items():
         assert a.get("readOnlyHint") is True, name
         assert a.get("destructiveHint") is False, name

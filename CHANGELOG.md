@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0 — 2026-10-24
+### Added
+- `check_transaction` tool: checks the exact transaction an agent is about to sign (`chain_id`,
+  `sender`, `to`, `data`, optional `value`), using `sra-riskgate` 0.9.0's `check_transaction`. A plain
+  USDC `transfer` is decoded (`decoded.recipient`, `decoded.amount_usdc`) and gets the same checks as
+  `check_payment_rules`, including the server's known payees and blocklist, `blocked_addresses` and
+  `untrusted_text`. Token approvals (`TOKEN_APPROVAL`, `UNLIMITED_APPROVAL`), other functions, other
+  contracts, native ETH and malformed calldata are held. Read-only, offline, fails closed.
+
+### Changed
+- Requires `sra-riskgate>=0.9.0`. No change to the other four tools.
+- The Dockerfile (used by Glama) installs 0.6.0; it still pinned 0.4.0.
+
 ## 0.5.1 — 2026-10-22
 ### Fixed
 - `check_payment_with_model` now sends a `User-Agent: sra-riskgate-mcp/<version>` header. Some proxies in
