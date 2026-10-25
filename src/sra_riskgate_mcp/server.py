@@ -45,7 +45,8 @@ from sra_riskgate import (RulePreFilter, SanctionsList, TransactionPayload, chec
                           decode_erc20_transfer, scan_payload_claims)
 from sra_riskgate.counterparty import parse_address_list
 from sra_riskgate.payload_claims import FLAG as CLAIMS_FLAG
-from sra_riskgate.chains import USDC_ADDRESSES, USDC_DECIMALS, chain_id_from_network, is_usdc
+from sra_riskgate.chains import (NATIVE_USDC_CHAINS, NATIVE_USDC_DECIMALS, USDC_ADDRESSES, USDC_DECIMALS,
+                                  chain_id_from_network, is_usdc)
 
 from mcp.types import ToolAnnotations
 
@@ -75,7 +76,8 @@ except TypeError:  # mcp 1.x
 # Parameter descriptions: what an agent reads when filling in each argument.
 D_ADDRESSES = ("One or more EVM addresses (0x followed by 40 hex characters) to check, for example a "
                "counterparty or the payee named in an invoice. Up to 100.")
-D_CHAIN = "EVM chain id: 1 (Ethereum), 8453 (Base) or 84532 (Base Sepolia). Other chains return hold."
+D_CHAIN = ("EVM chain id: 1 (Ethereum), 8453 (Base), 84532 (Base Sepolia), 5042 (Arc) or 5042002 (Arc Testnet). "
+           "Other chains return hold.")
 D_SENDER = "Your own wallet address, 0x followed by 40 hex characters."
 D_RECIPIENT = "The address you are about to pay, 0x followed by 40 hex characters."
 D_AMOUNT = "Amount in whole USDC (not atomic units), for example 20.5."
@@ -92,8 +94,10 @@ D_BLOCKED = ("Optional. Extra addresses to reject for this payment, on top of th
              "blocklist, for example addresses a human told you never to pay. Can only make the check stricter.")
 D_TX_TO = "The transaction's 'to' address: the contract the transaction calls. For a USDC payment, the USDC contract."
 D_TX_DATA = ("The transaction's calldata exactly as it will be signed, hex starting with 0x. For a USDC payment, "
-             "transfer(recipient, amount): 0xa9059cbb followed by two 32-byte words.")
-D_TX_VALUE = "Native ETH the transaction sends, in wei, as an integer or string (decimal or 0x hex). Default 0."
+             "transfer(recipient, amount): 0xa9059cbb followed by two 32-byte words. For a plain native USDC "
+             "send on Arc, \"0x\".")
+D_TX_VALUE = ("Native value the transaction sends, in the chain's smallest unit (wei), as an integer or string "
+              "(decimal or 0x hex). On Arc the native asset is USDC with 18 decimals. Default 0.")
 D_TYPED_DATA = ("The EIP-712 typed data you are about to sign, exactly as you would pass it to eth_signTypedData_v4: "
                 "an object (or JSON string) with domain, primaryType, message and optionally types. For x402 on "
                 "EVM this is a USDC TransferWithAuthorization with from, to, value, validAfter, validBefore, nonce.")
@@ -290,7 +294,8 @@ def check_payment_rules(
     (NEW_COUNTERPARTY): confirm the new payee with a human. Addresses on the server's blocklist, or
     in blocked_addresses, are rejected.
 
-    Only Ethereum (1), Base (8453) and Base Sepolia (84532) are supported; other chains get "hold".
+    Only Ethereum (1), Base (8453), Base Sepolia (84532), Arc (5042) and Arc Testnet (5042002) are
+    supported; other chains get "hold".
     Returns decision (approve | hold | reject), flags, explanation and required_actions.
     Only send the payment if decision is "approve".
     """
@@ -306,7 +311,7 @@ def check_payment_rules(
     if chain_id not in USDC_ADDRESSES:
         return {
             "decision": "hold", "risk_score": 0.65, "flags": ["unsupported_chain"],
-            "explanation": f"Chain {chain_id} is not supported; only Ethereum, Base and Base Sepolia are checked.",
+            "explanation": f"Chain {chain_id} is not supported; only Ethereum, Base, Base Sepolia, Arc and Arc Testnet are checked.",
             "required_actions": ["manual_review"], "source": "rules",
         }
     return _with_claims(_rules_verdict(chain_id, sender, recipient, amount_usdc, peg_deviation_pct, blocked),
@@ -335,7 +340,7 @@ def check_x402_payment(
     Payments to or from addresses on the OFAC SDN list (bundled, dated snapshot) are rejected, as are
     addresses on the server's blocklist or in blocked_addresses. If the server is configured with
     known payees, a payment to anyone else is held (NEW_COUNTERPARTY).
-    Only USDC on Ethereum, Base and Base Sepolia is checked; anything else is rejected.
+    Only USDC on Ethereum, Base, Base Sepolia, Arc and Arc Testnet is checked; anything else is rejected.
     Only sign and pay if decision is "approve".
     """
     blocked, bad = _parse_blocked_arg(blocked_addresses)
@@ -392,7 +397,9 @@ def check_transaction(
     that is not USDC on that chain (UNSUPPORTED_ASSET), native ETH (NATIVE_VALUE_TRANSFER) and malformed
     calldata (INVALID_TRANSACTION). An approval lets someone else move the wallet's USDC later.
 
-    Only Ethereum (1), Base (8453) and Base Sepolia (84532) are supported.
+    On Arc (5042, Arc Testnet 5042002) USDC is the native asset: a plain native send (value in 18-decimal
+    units, data "0x") to an address is checked as a USDC payment, and native value sent with a contract
+    call is held. Only Ethereum (1), Base (8453), Base Sepolia (84532), Arc and Arc Testnet are supported.
     Returns decision (approve | hold | reject), flags, explanation and required_actions; for a
     transfer, also the decoded recipient and amount. Only sign if decision is "approve".
     """
@@ -412,6 +419,9 @@ def check_transaction(
         if decoded is not None:
             out["decoded"] = {"recipient": decoded[0],
                               "amount_usdc": str(Decimal(decoded[1]) / (Decimal(10) ** USDC_DECIMALS))}
+        elif chain_id in NATIVE_USDC_CHAINS and _native_value(value) and not (data or "").strip().lower().removeprefix("0x"):
+            out["decoded"] = {"recipient": to, "amount_usdc": format(
+                (Decimal(_native_value(value)) / (Decimal(10) ** NATIVE_USDC_DECIMALS)).normalize(), "f")}
         return out
     except Exception as e:  # fail closed
         return {"decision": "hold", "risk_score": 0.65, "flags": ["check_failed"],
@@ -431,7 +441,7 @@ def check_x402_authorization(
 
     In x402 on EVM chains you do not send a transaction; you sign an EIP-712 TransferWithAuthorization,
     and anyone holding that signature can move the USDC until it expires. Call this with the exact typed
-    data before signing it. A USDC authorization on Ethereum (1), Base (8453) or Base Sepolia (84532) is
+    data before signing it. A USDC authorization on Ethereum (1), Base (8453), Base Sepolia (84532), Arc (5042) or Arc Testnet (5042002) is
     decoded and gets the same checks as check_payment_rules (OFAC SDN match, blocklist, known payees,
     amount ceiling, depeg, self-asserted claims in untrusted_text).
 
@@ -465,6 +475,21 @@ def check_x402_authorization(
         return {"decision": "hold", "risk_score": 0.65, "flags": ["check_failed"],
                 "explanation": f"The authorization check failed ({type(e).__name__}), so it is held.",
                 "required_actions": ["manual_review"], "source": "rules"}
+
+
+def _native_value(value: Any) -> int:
+    """A native value as an int (decimal or 0x hex), or 0 if it is not one."""
+    try:
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, str):
+            s = value.strip().lower()
+            v = int(s, 16) if s.startswith("0x") else int(s)
+        else:
+            v = int(value)
+        return v if v > 0 else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def _decode_authorization(typed_data: Any) -> Optional[dict[str, Any]]:

@@ -137,7 +137,7 @@ not as proof of general robustness.
 ## Limitations
 
 These tools give risk signals, not legal or compliance advice. The OFAC match is an exact comparison with a
-dated snapshot, not a sanctions screening service. The tools do not verify signatures or read chain state. Only USDC on Ethereum, Base and Base Sepolia is
+dated snapshot, not a sanctions screening service. The tools do not verify signatures or read chain state. Only USDC on Ethereum, Base, Base Sepolia, Arc and Arc Testnet is
 checked by the x402 tool.
 
 ## Related
