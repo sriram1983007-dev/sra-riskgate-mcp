@@ -4,6 +4,7 @@ import pytest
 from sra_riskgate.chains import USDC_ADDRESSES
 from sra_riskgate.sanctions import SanctionsList
 
+import sra_riskgate_mcp.server as server
 from test_server import call
 
 ME, YOU, OTHER = "0x" + "a" * 40, "0x" + "b" * 40, "0x" + "c" * 40
@@ -97,3 +98,35 @@ def test_bad_blocklist_argument_is_rejected():
 def test_misconfigured_server_is_a_configuration_error(monkeypatch):
     monkeypatch.setenv("SRA_KNOWN_RECIPIENTS", "not-an-address")
     assert tx()["flags"] == ["configuration_error"]
+
+
+# ------------------------------------------------------------------ 0.7.1: Arc, where native value is USDC
+ARC_USDC = USDC_ADDRESSES[5042]
+
+
+def test_arc_native_send_is_checked_and_decoded():
+    out = tx(chain_id=5042, to=YOU, data="0x", value=str(20 * 10**18))
+    assert out["decision"] == "approve"
+    assert out["decoded"] == {"recipient": YOU, "amount_usdc": "20"}
+    out = tx(chain_id=5042002, to=YOU, data="0x", value=hex(5 * 10**17))
+    assert out["decision"] == "approve" and out["decoded"]["amount_usdc"] == "0.5"
+
+
+def test_arc_native_send_gets_the_payment_rules(monkeypatch):
+    monkeypatch.setenv("SRA_MAX_AMOUNT", "10")
+    assert tx(chain_id=5042, to=YOU, data="0x", value=20 * 10**18)["flags"] == ["HIGH_VALUE_TRANSFER"]
+
+
+def test_arc_erc20_transfer_and_native_with_call():
+    assert tx(chain_id=5042, to=ARC_USDC)["decoded"] == {"recipient": YOU, "amount_usdc": "20"}
+    out = tx(chain_id=5042, to=ARC_USDC, value=10**18)
+    assert out["decision"] == "hold" and out["flags"] == ["NATIVE_VALUE_TRANSFER"] and "decoded" in out
+
+
+def test_native_value_on_base_is_still_held():
+    out = tx(to=YOU, data="0x", value=10**18)
+    assert out["decision"] == "hold" and "decoded" not in out
+
+
+def test_chain_descriptions_name_arc():
+    assert "5042" in server.D_CHAIN and "Arc" in server.D_TX_VALUE

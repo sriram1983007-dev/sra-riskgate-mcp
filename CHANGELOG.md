@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1 — 2026-10-25
+
+- Arc (Circle's blockchain), mainnet `5042` and testnet `5042002`, in every tool, using `sra-riskgate` 0.12.0.
+  On Arc, USDC is the native asset: `check_transaction` checks a plain native send (value in 18-decimal units,
+  `data` "0x") as a USDC payment and returns its decoded recipient and amount; native value sent with a contract
+  call is held. Tool and parameter descriptions name the supported chains.
+- Requires `sra-riskgate>=0.12.0`.
+
 ## 0.7.0 — 2026-10-25
 
 - `check_x402_authorization` tool: checks the EIP-712 typed data an agent signs for an x402 payment
