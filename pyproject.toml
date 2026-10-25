@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sra-riskgate-mcp"
-version = "0.6.0"
+version = "0.7.0"
 description = "MCP server that checks stablecoin and x402 payments before an AI agent pays"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [{ name = "Sriram Ramakrishnan" }]
-dependencies = ["mcp>=1.22", "sra-riskgate>=0.9.0"]
-keywords = ["mcp", "model-context-protocol", "stablecoin", "payments", "x402", "usdc", "ai-agents", "risk"]
+dependencies = ["mcp>=1.22", "sra-riskgate>=0.11.0"]
+keywords = ["mcp", "model-context-protocol", "stablecoin", "payments", "x402", "eip-3009", "usdc", "ai-agents", "risk"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Operating System :: OS Independent",

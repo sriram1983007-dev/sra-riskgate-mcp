@@ -14,7 +14,7 @@ def _schema(tool):  # mcp 1.x: inputSchema, mcp 2.x: input_schema
 
 def test_every_parameter_has_a_description():
     tools = _tools()
-    assert {t.name for t in tools} == {"check_address_sanctions", "check_payment_rules", "check_x402_payment", "check_transaction", "check_payment_with_model"}
+    assert {t.name for t in tools} == {"check_address_sanctions", "check_payment_rules", "check_x402_payment", "check_transaction", "check_x402_authorization", "check_payment_with_model"}
     for t in tools:
         for name, prop in _schema(t)["properties"].items():
             assert prop.get("description"), f"{t.name}.{name} has no description"
