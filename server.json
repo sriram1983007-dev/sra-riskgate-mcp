@@ -3,7 +3,7 @@
   "name": "io.github.sriram1983007-dev/sra-riskgate-mcp",
   "title": "SRA-RiskGate",
   "description": "Check stablecoin and x402 payments before an AI agent pays: approve, hold or reject.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "repository": {
     "url": "https://github.com/sriram1983007-dev/sra-riskgate-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "sra-riskgate-mcp",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -63,6 +63,13 @@
         {
           "name": "SRA_BLOCKED_ADDRESSES_FILE",
           "description": "File with one address to reject per line, added to SRA_BLOCKED_ADDRESSES",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_MAX_AUTH_VALIDITY_SECONDS",
+          "description": "Longest an x402 authorization may stay valid before it is held (default: 3600)",
           "isRequired": false,
           "format": "string",
           "isSecret": false

@@ -5,6 +5,7 @@ Tools:
   check_payment_rules        instant deterministic rule checks (no model, no GPU)
   check_x402_payment         rule checks for an x402 payment requirement, before an agent signs
   check_transaction          rule checks for the exact transaction (to, calldata, value) before signing it
+  check_x402_authorization   rule checks for the EIP-3009 authorization (EIP-712 typed data) before signing it
   check_payment_with_model   full review by SRA-RiskGate-4B via a local OpenAI-compatible server
 
 Configuration (environment variables):
@@ -18,12 +19,14 @@ Configuration (environment variables):
                      else is held (NEW_COUNTERPARTY). Unset: check off. Comma- or space-separated
                      addresses, or a file with one address per line (# comments allowed).
   SRA_BLOCKED_ADDRESSES / SRA_BLOCKED_ADDRESSES_FILE  addresses to always reject, same formats.
+  SRA_MAX_AUTH_VALIDITY_SECONDS  longest an x402 authorization may stay valid before it is held (default: 3600)
 
 Known payees come only from this configuration, never from tool arguments: an agent whose
 input has been tampered with must not be able to declare an attacker's address "known".
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -38,6 +41,7 @@ except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as MCPServer
 
 from sra_riskgate import (RulePreFilter, SanctionsList, TransactionPayload, check_transaction as sdk_check_transaction,
+                          check_authorization as sdk_check_authorization,
                           decode_erc20_transfer, scan_payload_claims)
 from sra_riskgate.counterparty import parse_address_list
 from sra_riskgate.payload_claims import FLAG as CLAIMS_FLAG
@@ -90,6 +94,9 @@ D_TX_TO = "The transaction's 'to' address: the contract the transaction calls. F
 D_TX_DATA = ("The transaction's calldata exactly as it will be signed, hex starting with 0x. For a USDC payment, "
              "transfer(recipient, amount): 0xa9059cbb followed by two 32-byte words.")
 D_TX_VALUE = "Native ETH the transaction sends, in wei, as an integer or string (decimal or 0x hex). Default 0."
+D_TYPED_DATA = ("The EIP-712 typed data you are about to sign, exactly as you would pass it to eth_signTypedData_v4: "
+                "an object (or JSON string) with domain, primaryType, message and optionally types. For x402 on "
+                "EVM this is a USDC TransferWithAuthorization with from, to, value, validAfter, validBefore, nonce.")
 D_NOW = "Current Unix time in seconds."
 D_POLICY = ('The receiving policy, for example {"max_amount_usdc": 100, "allowed_assets": ["USDC"], '
             '"trusted_attesters": ["0x..."]}.')
@@ -410,6 +417,69 @@ def check_transaction(
         return {"decision": "hold", "risk_score": 0.65, "flags": ["check_failed"],
                 "explanation": f"The transaction check failed ({type(e).__name__}), so it is held.",
                 "required_actions": ["manual_review"], "source": "rules"}
+
+
+@mcp.tool(annotations=CHECK_ONLY)
+def check_x402_authorization(
+    typed_data: Annotated[Union[dict, str], Field(description=D_TYPED_DATA)],
+    sender: Annotated[str, Field(description=D_SENDER)],
+    peg_deviation_pct: Annotated[Optional[float], Field(description=D_PEG)] = None,
+    untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
+    blocked_addresses: Annotated[Optional[list[str]], Field(description=D_BLOCKED)] = None,
+) -> dict[str, Any]:
+    """Check the x402 payment signature you are about to create: the EIP-3009 authorization itself.
+
+    In x402 on EVM chains you do not send a transaction; you sign an EIP-712 TransferWithAuthorization,
+    and anyone holding that signature can move the USDC until it expires. Call this with the exact typed
+    data before signing it. A USDC authorization on Ethereum (1), Base (8453) or Base Sepolia (84532) is
+    decoded and gets the same checks as check_payment_rules (OFAC SDN match, blocklist, known payees,
+    amount ceiling, depeg, self-asserted claims in untrusted_text).
+
+    Held instead: an authorization that has expired (AUTHORIZATION_EXPIRED), is post-dated
+    (AUTHORIZATION_NOT_YET_VALID) or stays valid longer than the server allows (LONG_LIVED_AUTHORIZATION,
+    default one hour); a Permit, which grants an allowance (TOKEN_APPROVAL, plus UNLIMITED_APPROVAL);
+    a domain that is not USDC on that chain (UNSUPPORTED_ASSET); any other primary type
+    (UNSUPPORTED_SIGNATURE); a "from" that is not sender (AUTHORIZATION_MISMATCH); malformed fields
+    (INVALID_AUTHORIZATION). Time is the server's clock, never an argument.
+
+    Returns decision (approve | hold | reject), flags, explanation and required_actions; for an
+    authorization, also the decoded recipient, amount and expiry. Only sign if decision is "approve".
+    """
+    blocked, bad = _parse_blocked_arg(blocked_addresses)
+    if bad:
+        return bad
+    try:
+        gate = _gate()
+    except Exception as e:
+        return _config_error(e)
+    try:
+        v = sdk_check_authorization(typed_data, sender=sender, gate=gate, blocked_addresses=blocked,
+                                    peg_deviation_pct=peg_deviation_pct, untrusted_request=untrusted_text,
+                                    max_validity_seconds=_float_env("SRA_MAX_AUTH_VALIDITY_SECONDS", 3600.0))
+        out = {**v.model_dump(mode="json"), "source": "rules"}
+        decoded = _decode_authorization(typed_data)
+        if decoded is not None:
+            out["decoded"] = decoded
+        return out
+    except Exception as e:  # fail closed
+        return {"decision": "hold", "risk_score": 0.65, "flags": ["check_failed"],
+                "explanation": f"The authorization check failed ({type(e).__name__}), so it is held.",
+                "required_actions": ["manual_review"], "source": "rules"}
+
+
+def _decode_authorization(typed_data: Any) -> Optional[dict[str, Any]]:
+    """Recipient, amount and expiry of a TransferWithAuthorization, for the agent to show a human. None otherwise."""
+    try:
+        if isinstance(typed_data, str):
+            typed_data = json.loads(typed_data)
+        m = typed_data["message"]
+        if typed_data.get("primaryType") not in ("TransferWithAuthorization", "ReceiveWithAuthorization"):
+            return None
+        value, before = (int(str(m[k]), 0) for k in ("value", "validBefore"))
+        return {"recipient": m["to"], "amount_usdc": str(Decimal(value) / (Decimal(10) ** USDC_DECIMALS)),
+                "valid_before": before}
+    except Exception:
+        return None
 
 
 @mcp.tool(annotations=CHECK_WITH_MODEL)

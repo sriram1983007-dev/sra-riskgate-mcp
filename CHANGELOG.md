@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0 — 2026-10-25
+
+- `check_x402_authorization` tool: checks the EIP-712 typed data an agent signs for an x402 payment
+  (EIP-3009 `TransferWithAuthorization`) before it signs, using `sra-riskgate` 0.11.0's
+  `check_authorization`. A current, short-lived USDC authorization is decoded (the result includes the
+  recipient, amount and expiry) and gets every check of `check_payment_rules`. Expired, post-dated and
+  long-lived authorizations, permits, non-USDC domains, other primary types and a `from` that is not the
+  agent's wallet are held. The time is the server's clock, never a tool argument.
+- New setting `SRA_MAX_AUTH_VALIDITY_SECONDS` (default 3600).
+- Requires `sra-riskgate>=0.11.0`. No change to the other five tools.
+
 ## 0.6.0 — 2026-10-24
 ### Added
 - `check_transaction` tool: checks the exact transaction an agent is about to sign (`chain_id`,

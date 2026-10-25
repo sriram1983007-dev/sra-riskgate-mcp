@@ -13,6 +13,7 @@ payment **before** paying it: `approve`, `hold` or `reject`.
 | `check_payment_rules` | Instant rule checks: OFAC SDN address match, address validity, self-transfers, amount ceiling, USDC depeg in both directions, and self-asserted claims in the payment's text | Nothing |
 | `check_x402_payment` | The same checks for an x402 payment requirement, before the agent signs | Nothing |
 | `check_transaction` | The same checks for the exact transaction the agent is about to sign (`to`, calldata, `value`); token approvals, other functions, other contracts and native ETH are held | Nothing |
+| `check_x402_authorization` | The same checks for the x402 signature itself (the EIP-3009 `TransferWithAuthorization` typed data) before signing; expired, post-dated or long-lived authorizations, permits and non-USDC domains are held | Nothing |
 | `check_payment_with_model` | Full review by [SRA-RiskGate-4B](https://huggingface.co/sriram1983007/SRA-RiskGate-4B) of the policy, the payment and your verification results | The model running locally |
 
 Every tool fails closed. Malformed input is rejected, and if the model is unreachable or answers
@@ -32,6 +33,15 @@ plain USDC `transfer` is decoded (the result includes the recipient and amount) 
 (`TOKEN_APPROVAL`, plus `UNLIMITED_APPROVAL`), which let someone else move the wallet's USDC later;
 other functions such as `transferFrom`; a contract that is not USDC on that chain; native ETH; and
 malformed calldata. Use it whenever the agent has the transaction, not just a description of the payment.
+
+**Check the x402 signature.** Since 0.7.0 (with `sra-riskgate` 0.11.0+), `check_x402_authorization` takes
+the EIP-712 typed data the agent is about to sign for an x402 payment. In x402 on EVM chains the agent
+signs an EIP-3009 `TransferWithAuthorization` instead of sending a transaction, and anyone holding that
+signature can move the USDC until it expires. The tool checks the domain is USDC on that chain, `from` is
+the agent's wallet, and the authorization is current and short-lived (held if valid for more than
+`SRA_MAX_AUTH_VALIDITY_SECONDS`, default one hour), then gives the decoded payment every check of
+`check_payment_rules`. A `Permit` is held as a token approval. Time comes from the server's clock, not
+from the agent.
 
 **Sanctioned addresses.** Since 0.4.0 (with `sra-riskgate` 0.7.1+), both rule tools **reject** any payment
 to or from an address on the OFAC SDN list, and `check_address_sanctions` checks addresses on their own,
