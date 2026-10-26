@@ -130,3 +130,28 @@ def test_native_value_on_base_is_still_held():
 
 def test_chain_descriptions_name_arc():
     assert "5042" in server.D_CHAIN and "Arc" in server.D_TX_VALUE
+
+
+# ------------------------------------------------------------------ 0.7.2: EIP-7702 code delegation
+DELEGATE = "0x" + "d" * 40
+
+
+@pytest.mark.parametrize("kw", [
+    dict(authorization_list=[{"address": DELEGATE, "chainId": 0, "nonce": 0}]),
+    dict(authorization_list=[{"contractAddress": DELEGATE, "chainId": 8453, "nonce": 1}], tx_type=4),
+    dict(tx_type="0x4"),
+])
+def test_eip7702_delegation_is_held(kw):
+    out = tx(**kw)  # an otherwise approvable USDC transfer
+    assert out["decision"] == "hold"
+    assert "CODE_DELEGATION" in out["flags"]
+
+
+def test_chain_id_zero_delegation_is_explained():
+    out = tx(authorization_list=[{"address": DELEGATE, "chainId": 0, "nonce": 0}])
+    assert DELEGATE in out["explanation"].lower() and "every chain" in out["explanation"]
+
+
+@pytest.mark.parametrize("kw", [dict(tx_type=2), dict(tx_type="0x2", authorization_list=[])])
+def test_ordinary_types_still_approve(kw):
+    assert tx(**kw)["decision"] == "approve"

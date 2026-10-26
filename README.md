@@ -33,6 +33,9 @@ plain USDC `transfer` is decoded (the result includes the recipient and amount) 
 (`TOKEN_APPROVAL`, plus `UNLIMITED_APPROVAL`), which let someone else move the wallet's USDC later;
 other functions such as `transferFrom`; a contract that is not USDC on that chain; native ETH; and
 malformed calldata. Use it whenever the agent has the transaction, not just a description of the payment.
+Since 0.7.2 it also takes the transaction's `tx_type` and `authorization_list`: an EIP-7702 delegation
+(type 4, or any authorization) is held as `CODE_DELEGATION`, because it hands control of the whole account
+to contract code, on every chain if signed with chain id 0.
 
 **Check the x402 signature.** Since 0.7.0 (with `sra-riskgate` 0.11.0+), `check_x402_authorization` takes
 the EIP-712 typed data the agent is about to sign for an x402 payment. In x402 on EVM chains the agent

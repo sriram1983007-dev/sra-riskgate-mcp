@@ -98,6 +98,10 @@ D_TX_DATA = ("The transaction's calldata exactly as it will be signed, hex start
              "send on Arc, \"0x\".")
 D_TX_VALUE = ("Native value the transaction sends, in the chain's smallest unit (wei), as an integer or string "
               "(decimal or 0x hex). On Arc the native asset is USDC with 18 decimals. Default 0.")
+D_TX_TYPE = ("The transaction type, if set (for example 2 or \"0x2\"). Type 4 (EIP-7702) is always held. Optional.")
+D_TX_AUTHS = ("The transaction's EIP-7702 authorizationList, if any: the list of authorizations exactly as you would "
+              "sign or send them (each with address or contractAddress, chainId, nonce). Any authorization is held, "
+              "because it hands control of the whole account to contract code. Optional.")
 D_TYPED_DATA = ("The EIP-712 typed data you are about to sign, exactly as you would pass it to eth_signTypedData_v4: "
                 "an object (or JSON string) with domain, primaryType, message and optionally types. For x402 on "
                 "EVM this is a USDC TransferWithAuthorization with from, to, value, validAfter, validBefore, nonce.")
@@ -384,6 +388,8 @@ def check_transaction(
     peg_deviation_pct: Annotated[Optional[float], Field(description=D_PEG)] = None,
     untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
     blocked_addresses: Annotated[Optional[list[str]], Field(description=D_BLOCKED)] = None,
+    tx_type: Annotated[Union[int, str, None], Field(description=D_TX_TYPE)] = None,
+    authorization_list: Annotated[Optional[list[dict[str, Any]]], Field(description=D_TX_AUTHS)] = None,
 ) -> dict[str, Any]:
     """Check the exact transaction you are about to sign: the contract it calls, its calldata and value.
 
@@ -396,6 +402,8 @@ def check_transaction(
     plus UNLIMITED_APPROVAL), other functions such as transferFrom (UNSUPPORTED_FUNCTION), a contract
     that is not USDC on that chain (UNSUPPORTED_ASSET), native ETH (NATIVE_VALUE_TRANSFER) and malformed
     calldata (INVALID_TRANSACTION). An approval lets someone else move the wallet's USDC later.
+    EIP-7702 code delegation (a type 4 transaction, or any authorization_list) is held as CODE_DELEGATION:
+    always pass the transaction's type and authorizationList if it has them.
 
     On Arc (5042, Arc Testnet 5042002) USDC is the native asset: a plain native send (value in 18-decimal
     units, data "0x") to an address is checked as a USDC payment, and native value sent with a contract
@@ -411,7 +419,12 @@ def check_transaction(
     except Exception as e:
         return _config_error(e)
     try:
-        v = sdk_check_transaction({"to": to, "data": data, "value": value}, chain_id=chain_id, sender=sender,
+        tx: dict[str, Any] = {"to": to, "data": data, "value": value}
+        if tx_type is not None:
+            tx["type"] = tx_type
+        if authorization_list is not None:
+            tx["authorizationList"] = authorization_list
+        v = sdk_check_transaction(tx, chain_id=chain_id, sender=sender,
                                   gate=gate, blocked_addresses=blocked, peg_deviation_pct=peg_deviation_pct,
                                   untrusted_request=untrusted_text)
         out = {**v.model_dump(mode="json"), "source": "rules"}
