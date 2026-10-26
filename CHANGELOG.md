@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.2 — 2026-10-25
+
+- `check_transaction` takes optional `tx_type` and `authorization_list`, so an EIP-7702 code delegation
+  (a type 4 transaction, or any authorization) is held as `CODE_DELEGATION`. Before, the tool had no way to
+  see a delegation. Thanks to Carlos (Bloqarl) on DEV.to for the question that found this.
+- Requires `sra-riskgate>=0.12.1`.
+
 ## 0.7.1 — 2026-10-25
 
 - Arc (Circle's blockchain), mainnet `5042` and testnet `5042002`, in every tool, using `sra-riskgate` 0.12.0.
