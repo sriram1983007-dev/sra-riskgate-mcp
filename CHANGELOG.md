@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 — 2026-10-26
+
+- `check_x402_authorization` supports Circle Gateway batched payments (nanopayments), using `sra-riskgate` 0.13.0:
+  a `TransferWithAuthorization` signed for the `GatewayWalletBatched` domain with Circle's GatewayWallet contract
+  is checked like any x402 payment instead of being held as long-lived. Gateway requires these to stay valid for at
+  least 3 days, so they have their own server-side limit, `SRA_MAX_GATEWAY_VALIDITY_SECONDS` (default 7 days).
+  The decoded result includes `"via": "circle_gateway"`.
+- Requires `sra-riskgate>=0.13.0`.
+
 ## 0.7.2 — 2026-10-25
 
 - `check_transaction` takes optional `tx_type` and `authorization_list`, so an EIP-7702 code delegation

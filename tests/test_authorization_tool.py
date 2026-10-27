@@ -126,3 +126,36 @@ def test_sdk_crash_fails_closed(monkeypatch):
     monkeypatch.setattr(server, "sdk_check_authorization", boom)
     out = auth()
     assert out["decision"] == "hold" and out["flags"] == ["check_failed"]
+
+
+# ------------------------------------------------------------------ 0.8.0: Circle Gateway batched payments
+GATEWAY_TESTNET = "0x0077777d7EBA4688BDeF3E311b846F25870A19B9"
+DAY = 86400
+
+
+def gateway(days=5, contract=GATEWAY_TESTNET, **kw):
+    td = typed(after=-(10**9), before=days * DAY, chain=5042002, value="10000", **kw)
+    td["message"]["validAfter"] = "0"
+    td["domain"] = {"name": "GatewayWalletBatched", "version": "1", "chainId": 5042002, "verifyingContract": contract}
+    return td
+
+
+def test_gateway_payment_is_approved_and_marked():
+    out = auth(gateway())
+    assert out["decision"] == "approve"
+    assert out["decoded"]["via"] == "circle_gateway" and out["decoded"]["amount_usdc"] == "0.01"
+
+
+def test_gateway_limit_is_server_config(monkeypatch):
+    assert auth(gateway(days=8))["flags"] == ["LONG_LIVED_AUTHORIZATION"]
+    monkeypatch.setenv("SRA_MAX_GATEWAY_VALIDITY_SECONDS", str(10 * DAY))
+    assert auth(gateway(days=8))["decision"] == "approve"
+
+
+def test_gateway_lookalike_and_short_validity_are_held():
+    assert auth(gateway(contract=OTHER))["flags"] == ["UNSUPPORTED_ASSET"]
+    assert auth(gateway(days=2))["flags"] == ["GATEWAY_VALIDITY_TOO_SHORT"]
+
+
+def test_one_hour_limit_still_applies_to_plain_x402():
+    assert auth(typed(before=5 * DAY))["flags"] == ["LONG_LIVED_AUTHORIZATION"]
