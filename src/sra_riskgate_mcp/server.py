@@ -21,7 +21,8 @@ Configuration (environment variables):
   SRA_BLOCKED_ADDRESSES / SRA_BLOCKED_ADDRESSES_FILE  addresses to always reject, same formats.
   SRA_MAX_AUTH_VALIDITY_SECONDS  longest an x402 authorization may stay valid before it is held (default: 3600)
   SRA_MAX_GATEWAY_VALIDITY_SECONDS  the same for Circle Gateway batched payments, which Gateway requires
-                     to stay valid for at least 3 days (default: 604800, 7 days)
+                     to stay valid for at least 3 days (default: 691200, 8 days; Circle's SDK signs for
+                     7 days plus 100 seconds)
 
 Known payees come only from this configuration, never from tool arguments: an agent whose
 input has been tampered with must not be able to declare an attacker's address "known".
@@ -470,7 +471,7 @@ def check_x402_authorization(
     Circle Gateway batched payments (nanopayments) are supported: the same TransferWithAuthorization signed
     for the "GatewayWalletBatched" domain (version "1") with Circle's GatewayWallet contract as
     verifyingContract. Gateway requires these to stay valid for at least 3 days, so they have their own,
-    server-set limit (default 7 days); one valid for less than 3 days is held (GATEWAY_VALIDITY_TOO_SHORT)
+    server-set limit (default 8 days, above the 7 days plus 100 seconds Circle's SDK signs for); one valid for less than 3 days is held (GATEWAY_VALIDITY_TOO_SHORT)
     because Gateway would reject it, and a Gateway-named domain with any other contract is UNSUPPORTED_ASSET.
 
     Returns decision (approve | hold | reject), flags, explanation and required_actions; for an
@@ -488,7 +489,7 @@ def check_x402_authorization(
                                     peg_deviation_pct=peg_deviation_pct, untrusted_request=untrusted_text,
                                     max_validity_seconds=_float_env("SRA_MAX_AUTH_VALIDITY_SECONDS", 3600.0),
                                     max_gateway_validity_seconds=_float_env("SRA_MAX_GATEWAY_VALIDITY_SECONDS",
-                                                                            7 * 86400.0))
+                                                                            8 * 86400.0))
         out = {**v.model_dump(mode="json"), "source": "rules"}
         decoded = _decode_authorization(typed_data)
         if decoded is not None:
