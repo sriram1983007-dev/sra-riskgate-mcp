@@ -46,6 +46,12 @@ the agent's wallet, and the authorization is current and short-lived (held if va
 `check_payment_rules`. A `Permit` is held as a token approval. Time comes from the server's clock, not
 from the agent.
 
+**Circle Gateway.** Since 0.8.0 (with `sra-riskgate` 0.13.0+), `check_x402_authorization` also checks Circle
+Gateway batched payments (nanopayments): the same authorization signed for Gateway's `GatewayWalletBatched` domain
+with Circle's GatewayWallet contract. Gateway requires these to stay valid for at least 3 days, so they have their
+own limit, `SRA_MAX_GATEWAY_VALIDITY_SECONDS` (default 7 days), set on the server like every other limit. A
+Gateway-named domain with any other contract is held.
+
 **Sanctioned addresses.** Since 0.4.0 (with `sra-riskgate` 0.7.1+), both rule tools **reject** any payment
 to or from an address on the OFAC SDN list, and `check_address_sanctions` checks addresses on their own,
 before a payment exists. The list is a dated snapshot bundled with `sra-riskgate`, matched exactly and
@@ -96,6 +102,8 @@ ollama pull sriram1983007/sra-riskgate
 | `SRA_KNOWN_RECIPIENTS` | unset (check off) | Verified payees, comma- or space-separated. Payments to anyone else are held (`NEW_COUNTERPARTY`). Set but empty: every payment is held |
 | `SRA_KNOWN_RECIPIENTS_FILE` | unset | A file with one verified payee per line (`#` comments allowed), added to the list above |
 | `SRA_BLOCKED_ADDRESSES` / `SRA_BLOCKED_ADDRESSES_FILE` | unset | Addresses to always reject, same formats |
+| `SRA_MAX_AUTH_VALIDITY_SECONDS` | `3600` | Longest an x402 authorization may stay valid before it is held |
+| `SRA_MAX_GATEWAY_VALIDITY_SECONDS` | `604800` (7 days) | The same for Circle Gateway batched payments, which must stay valid for at least 3 days |
 
 A malformed address or an unreadable file in any of these gives `reject` with `configuration_error`, so a
 typo can never silently weaken a check. Example:
