@@ -6,6 +6,7 @@ Tools:
   check_x402_payment         rule checks for an x402 payment requirement, before an agent signs
   check_transaction          rule checks for the exact transaction (to, calldata, value) before signing it
   check_x402_authorization   rule checks for the EIP-3009 authorization (EIP-712 typed data) before signing it
+  check_circle_wallets_request  rule checks for a Circle Wallets (developer-controlled) API request before sending it
   check_payment_with_model   full review by SRA-RiskGate-4B via a local OpenAI-compatible server
 
 Configuration (environment variables):
@@ -21,7 +22,13 @@ Configuration (environment variables):
   SRA_BLOCKED_ADDRESSES / SRA_BLOCKED_ADDRESSES_FILE  addresses to always reject, same formats.
   SRA_MAX_AUTH_VALIDITY_SECONDS  longest an x402 authorization may stay valid before it is held (default: 3600)
   SRA_MAX_GATEWAY_VALIDITY_SECONDS  the same for Circle Gateway batched payments, which Gateway requires
-                     to stay valid for at least 3 days (default: 604800, 7 days)
+                     to stay valid for at least 3 days (default: 691200, 8 days; Circle's SDK signs for
+                     7 days plus 100 seconds)
+  SRA_CIRCLE_WALLETS  Circle Wallets the agent may use, as walletId=0xaddress pairs (comma- or space-separated).
+                     When set, a Circle request from any other wallet id is held. Unset: the request's wallet
+                     must match the sender argument.
+  SRA_CIRCLE_USDC_TOKEN_IDS  Circle token ids you have confirmed are USDC, for transfers that name the token
+                     by tokenId (comma- or space-separated). Unset: such transfers are held.
 
 Known payees come only from this configuration, never from tool arguments: an agent whose
 input has been tampered with must not be able to declare an attacker's address "known".
@@ -44,6 +51,7 @@ except ImportError:  # mcp 1.x
 
 from sra_riskgate import (RulePreFilter, SanctionsList, TransactionPayload, check_transaction as sdk_check_transaction,
                           check_authorization as sdk_check_authorization,
+                          check_circle_request as sdk_check_circle_request,
                           decode_erc20_transfer, scan_payload_claims)
 from sra_riskgate.counterparty import parse_address_list
 from sra_riskgate.payload_claims import FLAG as CLAIMS_FLAG
@@ -107,6 +115,14 @@ D_TX_AUTHS = ("The transaction's EIP-7702 authorizationList, if any: the list of
 D_TYPED_DATA = ("The EIP-712 typed data you are about to sign, exactly as you would pass it to eth_signTypedData_v4: "
                 "an object (or JSON string) with domain, primaryType, message and optionally types. For x402 on "
                 "EVM this is a USDC TransferWithAuthorization with from, to, value, validAfter, validBefore, nonce.")
+D_CIRCLE_OP = ('The Circle Wallets operation: "transfer", "contractExecution", "signTypedData", "signTransaction" or '
+               '"signMessage", or its API path such as "/v1/w3s/developer/transactions/transfer".')
+D_CIRCLE_REQUEST = ("The JSON request body exactly as you are about to send it to Circle's API (an object, or a JSON "
+                    "string), for example {\"walletId\": ..., \"blockchain\": \"ARC-TESTNET\", \"tokenAddress\": ..., "
+                    "\"destinationAddress\": ..., \"amounts\": [\"2.5\"]}.")
+D_CIRCLE_SENDER = "The address of the Circle wallet the request spends from, 0x followed by 40 hex characters."
+D_CIRCLE_CHAIN = ("Optional. EVM chain id of the wallet, needed only when the body names the wallet by walletId and has "
+                  "no blockchain field: 1, 8453, 84532, 5042 or 5042002.")
 D_NOW = "Current Unix time in seconds."
 D_POLICY = ('The receiving policy, for example {"max_amount_usdc": 100, "allowed_assets": ["USDC"], '
             '"trusted_attesters": ["0x..."]}.')
@@ -139,6 +155,22 @@ def _address_env(name: str) -> Optional[list[str]]:
                 if line:
                     entries.append(line)
     return entries
+
+
+def _circle_wallets_env() -> Optional[dict[str, str]]:
+    """SRA_CIRCLE_WALLETS as {wallet id: address}, or None if unset. Raises on a malformed entry."""
+    raw = os.environ.get("SRA_CIRCLE_WALLETS")
+    if raw is None:
+        return None
+    out: dict[str, str] = {}
+    for entry in re.split(r"[\s,]+", raw.strip()):
+        if not entry:
+            continue
+        wallet_id, sep, address = entry.partition("=")
+        if not sep or not wallet_id or not re.fullmatch(r"0x[0-9a-fA-F]{40}", address):
+            raise ValueError(f"SRA_CIRCLE_WALLETS entry {entry!r} is not walletId=0x<40 hex>")
+        out[wallet_id] = address
+    return out
 
 
 def _gate() -> RulePreFilter:
@@ -470,7 +502,7 @@ def check_x402_authorization(
     Circle Gateway batched payments (nanopayments) are supported: the same TransferWithAuthorization signed
     for the "GatewayWalletBatched" domain (version "1") with Circle's GatewayWallet contract as
     verifyingContract. Gateway requires these to stay valid for at least 3 days, so they have their own,
-    server-set limit (default 7 days); one valid for less than 3 days is held (GATEWAY_VALIDITY_TOO_SHORT)
+    server-set limit (default 8 days, above the 7 days plus 100 seconds Circle's SDK signs for); one valid for less than 3 days is held (GATEWAY_VALIDITY_TOO_SHORT)
     because Gateway would reject it, and a Gateway-named domain with any other contract is UNSUPPORTED_ASSET.
 
     Returns decision (approve | hold | reject), flags, explanation and required_actions; for an
@@ -488,7 +520,7 @@ def check_x402_authorization(
                                     peg_deviation_pct=peg_deviation_pct, untrusted_request=untrusted_text,
                                     max_validity_seconds=_float_env("SRA_MAX_AUTH_VALIDITY_SECONDS", 3600.0),
                                     max_gateway_validity_seconds=_float_env("SRA_MAX_GATEWAY_VALIDITY_SECONDS",
-                                                                            7 * 86400.0))
+                                                                            8 * 86400.0))
         out = {**v.model_dump(mode="json"), "source": "rules"}
         decoded = _decode_authorization(typed_data)
         if decoded is not None:
@@ -498,6 +530,65 @@ def check_x402_authorization(
         return {"decision": "hold", "risk_score": 0.65, "flags": ["check_failed"],
                 "explanation": f"The authorization check failed ({type(e).__name__}), so it is held.",
                 "required_actions": ["manual_review"], "source": "rules"}
+
+
+@mcp.tool(annotations=CHECK_ONLY)
+def check_circle_wallets_request(
+    operation: Annotated[str, Field(description=D_CIRCLE_OP)],
+    request: Annotated[Union[dict, str], Field(description=D_CIRCLE_REQUEST)],
+    sender: Annotated[str, Field(description=D_CIRCLE_SENDER)],
+    chain_id: Annotated[Optional[int], Field(description=D_CIRCLE_CHAIN)] = None,
+    peg_deviation_pct: Annotated[Optional[float], Field(description=D_PEG)] = None,
+    untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
+    blocked_addresses: Annotated[Optional[list[str]], Field(description=D_BLOCKED)] = None,
+) -> dict[str, Any]:
+    """Check a Circle Wallets (developer-controlled) API request before you send it to Circle.
+
+    With Circle Wallets you never sign yourself: Circle signs as soon as it accepts your request. So call
+    this with the exact request body BEFORE sending it, and only send it if decision is "approve".
+
+    A transfer of USDC (by tokenAddress, or a Circle tokenId the server has confirmed is USDC), or of native
+    USDC on Arc, gets the same checks as check_payment_rules (OFAC SDN match, blocklist, known payees,
+    amount ceiling, depeg, self-asserted claims in untrusted_text). A contractExecution is rebuilt into its
+    calldata and checked like check_transaction: only a USDC transfer() is approved, and approve() is held
+    (TOKEN_APPROVAL, plus UNLIMITED_APPROVAL). signTypedData is checked like check_x402_authorization (x402,
+    Circle Gateway, Permit held). signTransaction is checked like check_transaction, including EIP-7702
+    delegations. signMessage and wallet upgrades are always held.
+
+    Also held: a wallet that does not match sender or is not one the server allows (WALLET_MISMATCH,
+    UNKNOWN_WALLET), other tokens and NFTs (UNSUPPORTED_ASSET), unsupported chains (UNSUPPORTED_CHAIN) and
+    malformed bodies (INVALID_REQUEST). Supported chains: ETH, BASE, BASE-SEPOLIA, ARC, ARC-TESTNET.
+    Returns decision (approve | hold | reject), flags, explanation and required_actions.
+    """
+    blocked, bad = _parse_blocked_arg(blocked_addresses)
+    if bad:
+        return bad
+    try:
+        gate = _gate()
+        wallets = _circle_wallets_env()
+        token_ids = _address_list_env("SRA_CIRCLE_USDC_TOKEN_IDS")
+    except Exception as e:
+        return _config_error(e)
+    try:
+        body = json.loads(request) if isinstance(request, str) else request
+        v = sdk_check_circle_request(
+            operation, body, sender=sender, chain=chain_id, wallets=wallets, usdc_token_ids=token_ids,
+            gate=gate, blocked_addresses=blocked, peg_deviation_pct=peg_deviation_pct,
+            untrusted_request=untrusted_text,
+            max_validity_seconds=_float_env("SRA_MAX_AUTH_VALIDITY_SECONDS", 3600.0),
+            max_gateway_validity_seconds=_float_env("SRA_MAX_GATEWAY_VALIDITY_SECONDS", 8 * 86400.0))
+        return {**v.model_dump(mode="json"), "source": "rules"}
+    except Exception as e:  # fail closed
+        return {"decision": "hold", "risk_score": 0.65, "flags": ["check_failed"],
+                "explanation": f"The Circle Wallets request check failed ({type(e).__name__}), so it is held.",
+                "required_actions": ["manual_review"], "source": "rules"}
+
+
+def _address_list_env(name: str) -> Optional[list[str]]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return [e for e in re.split(r"[\s,]+", raw.strip()) if e]
 
 
 def _native_value(value: Any) -> int:

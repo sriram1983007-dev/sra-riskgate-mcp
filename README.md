@@ -14,6 +14,7 @@ payment **before** paying it: `approve`, `hold` or `reject`.
 | `check_x402_payment` | The same checks for an x402 payment requirement, before the agent signs | Nothing |
 | `check_transaction` | The same checks for the exact transaction the agent is about to sign (`to`, calldata, `value`); token approvals, other functions, other contracts and native ETH are held | Nothing |
 | `check_x402_authorization` | The same checks for the x402 signature itself (the EIP-3009 `TransferWithAuthorization` typed data) before signing; expired, post-dated or long-lived authorizations, permits and non-USDC domains are held | Nothing |
+| `check_circle_wallets_request` | The same checks for a Circle Wallets (developer-controlled) API request before it is sent: transfers, contract executions, typed-data and transaction signing; `approve()`, other tokens, raw messages and wallet upgrades are held | Nothing |
 | `check_payment_with_model` | Full review by [SRA-RiskGate-4B](https://huggingface.co/sriram1983007/SRA-RiskGate-4B) of the policy, the payment and your verification results | The model running locally |
 
 Every tool fails closed. Malformed input is rejected, and if the model is unreachable or answers
@@ -49,8 +50,16 @@ from the agent.
 **Circle Gateway.** Since 0.8.0 (with `sra-riskgate` 0.13.0+), `check_x402_authorization` also checks Circle
 Gateway batched payments (nanopayments): the same authorization signed for Gateway's `GatewayWalletBatched` domain
 with Circle's GatewayWallet contract. Gateway requires these to stay valid for at least 3 days, so they have their
-own limit, `SRA_MAX_GATEWAY_VALIDITY_SECONDS` (default 7 days), set on the server like every other limit. A
-Gateway-named domain with any other contract is held.
+own limit, `SRA_MAX_GATEWAY_VALIDITY_SECONDS` (default 8 days, above the 7 days plus 100 seconds that Circle's SDK signs for), set on the server like every other limit. A
+Gateway-named domain with any other contract is held. (0.8.0 shipped with a 7-day default, which held payments
+made by Circle's SDK; fixed in 0.9.0.)
+
+**Circle Wallets.** Since 0.9.0 (with `sra-riskgate` 0.14.0+), `check_circle_wallets_request` checks a request to
+Circle's developer-controlled wallets API before the agent sends it. With Circle Wallets the agent never signs:
+Circle signs as soon as it accepts the request, so this is the last point a bad payment can be stopped. Pass the
+operation (`transfer`, `contractExecution`, `signTypedData`, `signTransaction`) and the exact body. Set
+`SRA_CIRCLE_WALLETS` to the wallets the agent may use (`walletId=0xaddress`, comma-separated) so a request from
+any other wallet is held.
 
 **Sanctioned addresses.** Since 0.4.0 (with `sra-riskgate` 0.7.1+), both rule tools **reject** any payment
 to or from an address on the OFAC SDN list, and `check_address_sanctions` checks addresses on their own,
@@ -103,7 +112,9 @@ ollama pull sriram1983007/sra-riskgate
 | `SRA_KNOWN_RECIPIENTS_FILE` | unset | A file with one verified payee per line (`#` comments allowed), added to the list above |
 | `SRA_BLOCKED_ADDRESSES` / `SRA_BLOCKED_ADDRESSES_FILE` | unset | Addresses to always reject, same formats |
 | `SRA_MAX_AUTH_VALIDITY_SECONDS` | `3600` | Longest an x402 authorization may stay valid before it is held |
-| `SRA_MAX_GATEWAY_VALIDITY_SECONDS` | `604800` (7 days) | The same for Circle Gateway batched payments, which must stay valid for at least 3 days |
+| `SRA_MAX_GATEWAY_VALIDITY_SECONDS` | `691200` (8 days) | The same for Circle Gateway batched payments, which must stay valid for at least 3 days |
+| `SRA_CIRCLE_WALLETS` | unset | Circle wallets the agent may use, as `walletId=0xaddress` pairs; any other wallet id is held |
+| `SRA_CIRCLE_USDC_TOKEN_IDS` | unset | Circle token ids you have confirmed are USDC, for transfers by `tokenId` (otherwise held) |
 
 A malformed address or an unreadable file in any of these gives `reject` with `configuration_error`, so a
 typo can never silently weaken a check. Example:

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.0 — 2026-10-27
+
+### Added
+- `check_circle_wallets_request`: checks a Circle Wallets (developer-controlled) API request before the agent
+  sends it, using `sra-riskgate` 0.14.0. Transfers (USDC, native USDC on Arc), contract executions (rebuilt into
+  calldata; `approve()` held), `signTypedData` (x402, Gateway, Permit) and `signTransaction` (including EIP-7702);
+  `signMessage` and wallet upgrades are held. New settings `SRA_CIRCLE_WALLETS` and `SRA_CIRCLE_USDC_TOKEN_IDS`.
+
+### Fixed
+- **0.8.0 held payments made by Circle's own Gateway SDK.** `@circle-fin/x402-batching` signs Gateway
+  authorizations for 7 days plus 100 seconds, just over 0.8.0's 7-day default. The default
+  `SRA_MAX_GATEWAY_VALIDITY_SECONDS` is now 8 days.
+- Requires `sra-riskgate>=0.14.0`.
+
 ## 0.8.0 — 2026-10-26
 
 - `check_x402_authorization` supports Circle Gateway batched payments (nanopayments), using `sra-riskgate` 0.13.0:
