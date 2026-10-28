@@ -15,6 +15,7 @@ payment **before** paying it: `approve`, `hold` or `reject`.
 | `check_transaction` | The same checks for the exact transaction the agent is about to sign (`to`, calldata, `value`); token approvals, other functions, other contracts and native ETH are held | Nothing |
 | `check_x402_authorization` | The same checks for the x402 signature itself (the EIP-3009 `TransferWithAuthorization` typed data) before signing; expired, post-dated or long-lived authorizations, permits and non-USDC domains are held | Nothing |
 | `check_circle_wallets_request` | The same checks for a Circle Wallets (developer-controlled) API request before it is sent: transfers, contract executions, typed-data and transaction signing; `approve()`, other tokens, raw messages and wallet upgrades are held | Nothing |
+| `check_delegation` | An EIP-7702 authorization before signing it: always held, naming the delegate contract and whether it is valid on every chain | Nothing |
 | `check_payment_with_model` | Full review by [SRA-RiskGate-4B](https://huggingface.co/sriram1983007/SRA-RiskGate-4B) of the policy, the payment and your verification results | The model running locally |
 
 Every tool fails closed. Malformed input is rejected, and if the model is unreachable or answers
