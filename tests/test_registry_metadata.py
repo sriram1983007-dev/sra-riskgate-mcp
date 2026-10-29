@@ -32,3 +32,15 @@ def test_registry_constraints():
     assert server["name"].startswith("io.github.sriram1983007-dev/")
     assert server["packages"][0]["identifier"] == "sra-riskgate-mcp"
     assert server["packages"][0]["transport"]["type"] == "stdio"
+
+
+def test_every_setting_the_server_reads_is_declared():
+    """0.9.1: server.json lists every SRA_ environment variable the code reads, so clients can offer them."""
+    src = "".join(p.read_text() for p in (ROOT / "src" / "sra_riskgate_mcp").glob("*.py"))
+    used = set(re.findall(r'"(SRA_[A-Z_]+)"', src))
+    used |= {f"{name}_FILE" for name in re.findall(r'_address_env\("(SRA_[A-Z_]+)"\)', src)}
+    server = json.loads((ROOT / "server.json").read_text())
+    declared = {e["name"] for e in server["packages"][0]["environmentVariables"]}
+    assert used - declared == set()
+    secret = {e["name"] for e in server["packages"][0]["environmentVariables"] if e["isSecret"]}
+    assert secret == {"SRA_API_KEY"}

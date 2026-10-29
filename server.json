@@ -3,7 +3,7 @@
   "name": "io.github.sriram1983007-dev/sra-riskgate-mcp",
   "title": "SRA-RiskGate",
   "description": "Check stablecoin and x402 payments before an AI agent pays: approve, hold or reject.",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "repository": {
     "url": "https://github.com/sriram1983007-dev/sra-riskgate-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "sra-riskgate-mcp",
-      "version": "0.9.0",
+      "version": "0.9.1",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -70,6 +70,55 @@
         {
           "name": "SRA_MAX_AUTH_VALIDITY_SECONDS",
           "description": "Longest an x402 authorization may stay valid before it is held (default: 3600)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_API_KEY",
+          "description": "API key for the model endpoint, if it needs one",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "SRA_TIMEOUT",
+          "description": "Seconds to wait for the model (default: 120)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_DEPEG_HOLD_PCT",
+          "description": "Hold payments when USDC is this many percent off $1.00 (default: 1)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_DEPEG_REJECT_PCT",
+          "description": "Reject payments when USDC is this many percent off $1.00 (default: 5)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_MAX_GATEWAY_VALIDITY_SECONDS",
+          "description": "Longest a Circle Gateway batched payment may stay valid before it is held (default: 691200, 8 days)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_CIRCLE_WALLETS",
+          "description": "Circle Wallets the agent may use, as walletId=0xaddress pairs, comma-separated; any other wallet is held",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_CIRCLE_USDC_TOKEN_IDS",
+          "description": "Circle token ids confirmed to be USDC, for transfers by tokenId, comma-separated",
           "isRequired": false,
           "format": "string",
           "isSecret": false

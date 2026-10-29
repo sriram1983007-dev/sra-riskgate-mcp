@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.1 — 2026-10-27
+
+- `check_delegation`: checks a standalone EIP-7702 authorization before the agent signs it (always held as
+  `CODE_DELEGATION`, naming the delegate contract and whether chain id 0 makes it valid on every chain).
+  Transactions carrying an `authorizationList` were already held by `check_transaction`.
+- `server.json` now declares every setting the server reads, including `SRA_MAX_GATEWAY_VALIDITY_SECONDS`,
+  `SRA_CIRCLE_WALLETS` and `SRA_CIRCLE_USDC_TOKEN_IDS`, so MCP clients can offer them; `SRA_API_KEY` is marked
+  secret. A test keeps the list in step with the code.
+
 ## 0.9.0 — 2026-10-27
 
 ### Added

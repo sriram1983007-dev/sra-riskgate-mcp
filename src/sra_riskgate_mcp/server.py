@@ -7,6 +7,7 @@ Tools:
   check_transaction          rule checks for the exact transaction (to, calldata, value) before signing it
   check_x402_authorization   rule checks for the EIP-3009 authorization (EIP-712 typed data) before signing it
   check_circle_wallets_request  rule checks for a Circle Wallets (developer-controlled) API request before sending it
+  check_delegation           an EIP-7702 authorization before signing it (always held)
   check_payment_with_model   full review by SRA-RiskGate-4B via a local OpenAI-compatible server
 
 Configuration (environment variables):
@@ -50,6 +51,7 @@ except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as MCPServer
 
 from sra_riskgate import (RulePreFilter, SanctionsList, TransactionPayload, check_transaction as sdk_check_transaction,
+                          check_delegation as sdk_check_delegation,
                           check_authorization as sdk_check_authorization,
                           check_circle_request as sdk_check_circle_request,
                           decode_erc20_transfer, scan_payload_claims)
@@ -123,6 +125,9 @@ D_CIRCLE_REQUEST = ("The JSON request body exactly as you are about to send it t
 D_CIRCLE_SENDER = "The address of the Circle wallet the request spends from, 0x followed by 40 hex characters."
 D_CIRCLE_CHAIN = ("Optional. EVM chain id of the wallet, needed only when the body names the wallet by walletId and has "
                   "no blockchain field: 1, 8453, 84532, 5042 or 5042002.")
+D_DELEGATION = ("The EIP-7702 authorization you are being asked to sign, as an object: the contract address it "
+                "delegates to (address or contractAddress), chainId and nonce, exactly as you would pass it to "
+                "signAuthorization.")
 D_NOW = "Current Unix time in seconds."
 D_POLICY = ('The receiving policy, for example {"max_amount_usdc": 100, "allowed_assets": ["USDC"], '
             '"trusted_attesters": ["0x..."]}.')
@@ -582,6 +587,27 @@ def check_circle_wallets_request(
         return {"decision": "hold", "risk_score": 0.65, "flags": ["check_failed"],
                 "explanation": f"The Circle Wallets request check failed ({type(e).__name__}), so it is held.",
                 "required_actions": ["manual_review"], "source": "rules"}
+
+
+@mcp.tool(annotations=CHECK_ONLY)
+def check_delegation(
+    authorization: Annotated[Union[dict, str, None], Field(description=D_DELEGATION)] = None,
+) -> dict[str, Any]:
+    """Check an EIP-7702 authorization before you sign it. The answer is always "hold".
+
+    An EIP-7702 authorization is not a payment: it makes your wallet's own account run another contract's
+    code, so that contract can move everything the wallet holds, in every token, without asking again. With
+    chainId 0 it is valid on every chain. No check can make that safe for an agent to sign on its own, so
+    this tool always returns hold (CODE_DELEGATION) and names the contract and chains; ask a human. A
+    transaction that carries an authorizationList is held the same way by check_transaction.
+    Returns decision, flags, explanation and required_actions. Never sign unless decision is "approve".
+    """
+    try:
+        auth = json.loads(authorization) if isinstance(authorization, str) else authorization
+    except ValueError:
+        auth = None
+    v = sdk_check_delegation(auth)
+    return {**v.model_dump(mode="json"), "source": "rules"}
 
 
 def _address_list_env(name: str) -> Optional[list[str]]:
