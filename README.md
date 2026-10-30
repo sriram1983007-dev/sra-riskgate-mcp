@@ -55,6 +55,12 @@ own limit, `SRA_MAX_GATEWAY_VALIDITY_SECONDS` (default 8 days, above the 7 days 
 Gateway-named domain with any other contract is held. (0.8.0 shipped with a 7-day default, which held payments
 made by Circle's SDK; fixed in 0.9.0.)
 
+**Is the wallet still yours?** Since 0.9.2 (with `sra-riskgate` 0.16.0+), every payment tool takes an optional
+`account_code`: your wallet's `eth_getCode` result. An EIP-7702 authorization signed anywhere else leaves
+`0xef0100` followed by the delegate's address in the account's code; if that delegate is not in
+`SRA_EXPECTED_DELEGATES`, the payment is held (`ACCOUNT_DELEGATED`). Plain accounts and ordinary contract wallets
+pass. Suggested by Carlos (Bloqarl) on DEV.to.
+
 **Circle Wallets.** Since 0.9.0 (with `sra-riskgate` 0.14.0+), `check_circle_wallets_request` checks a request to
 Circle's developer-controlled wallets API before the agent sends it. With Circle Wallets the agent never signs:
 Circle signs as soon as it accepts the request, so this is the last point a bad payment can be stopped. Pass the
@@ -114,6 +120,7 @@ ollama pull sriram1983007/sra-riskgate
 | `SRA_BLOCKED_ADDRESSES` / `SRA_BLOCKED_ADDRESSES_FILE` | unset | Addresses to always reject, same formats |
 | `SRA_MAX_AUTH_VALIDITY_SECONDS` | `3600` | Longest an x402 authorization may stay valid before it is held |
 | `SRA_MAX_GATEWAY_VALIDITY_SECONDS` | `691200` (8 days) | The same for Circle Gateway batched payments, which must stay valid for at least 3 days |
+| `SRA_EXPECTED_DELEGATES` / `SRA_EXPECTED_DELEGATES_FILE` | unset | EIP-7702 delegate contracts your wallet uses on purpose; with `account_code`, any other delegation is held |
 | `SRA_CIRCLE_WALLETS` | unset | Circle wallets the agent may use, as `walletId=0xaddress` pairs; any other wallet id is held |
 | `SRA_CIRCLE_USDC_TOKEN_IDS` | unset | Circle token ids you have confirmed are USDC, for transfers by `tokenId` (otherwise held) |
 

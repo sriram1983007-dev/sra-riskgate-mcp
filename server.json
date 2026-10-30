@@ -3,7 +3,7 @@
   "name": "io.github.sriram1983007-dev/sra-riskgate-mcp",
   "title": "SRA-RiskGate",
   "description": "Check stablecoin and x402 payments before an AI agent pays: approve, hold or reject.",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "repository": {
     "url": "https://github.com/sriram1983007-dev/sra-riskgate-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "sra-riskgate-mcp",
-      "version": "0.9.1",
+      "version": "0.9.2",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -119,6 +119,20 @@
         {
           "name": "SRA_CIRCLE_USDC_TOKEN_IDS",
           "description": "Circle token ids confirmed to be USDC, for transfers by tokenId, comma-separated",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_EXPECTED_DELEGATES",
+          "description": "EIP-7702 delegate contracts your wallet uses on purpose, comma-separated; with account_code, any other delegation is held",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_EXPECTED_DELEGATES_FILE",
+          "description": "File with one expected delegate address per line, added to SRA_EXPECTED_DELEGATES",
           "isRequired": false,
           "format": "string",
           "isSecret": false

@@ -28,6 +28,9 @@ Configuration (environment variables):
   SRA_CIRCLE_WALLETS  Circle Wallets the agent may use, as walletId=0xaddress pairs (comma- or space-separated).
                      When set, a Circle request from any other wallet id is held. Unset: the request's wallet
                      must match the sender argument.
+  SRA_EXPECTED_DELEGATES / SRA_EXPECTED_DELEGATES_FILE  EIP-7702 delegate contracts your wallet uses on
+                     purpose. A tool given account_code (eth_getCode of your wallet) holds the payment if the
+                     wallet is delegated to any other contract (ACCOUNT_DELEGATED).
   SRA_CIRCLE_USDC_TOKEN_IDS  Circle token ids you have confirmed are USDC, for transfers that name the token
                      by tokenId (comma- or space-separated). Unset: such transfers are held.
 
@@ -50,7 +53,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as MCPServer
 
-from sra_riskgate import (RulePreFilter, SanctionsList, TransactionPayload, check_transaction as sdk_check_transaction,
+from sra_riskgate import (RulePreFilter, check_account_code as sdk_check_account_code, SanctionsList, TransactionPayload, check_transaction as sdk_check_transaction,
                           check_delegation as sdk_check_delegation,
                           check_authorization as sdk_check_authorization,
                           check_circle_request as sdk_check_circle_request,
@@ -128,6 +131,10 @@ D_CIRCLE_CHAIN = ("Optional. EVM chain id of the wallet, needed only when the bo
 D_DELEGATION = ("The EIP-7702 authorization you are being asked to sign, as an object: the contract address it "
                 "delegates to (address or contractAddress), chainId and nonce, exactly as you would pass it to "
                 "signAuthorization.")
+D_ACCOUNT_CODE = ("Optional but recommended. Your own wallet's on-chain code, exactly as eth_getCode returns it for "
+                  "your address (\"0x\" for a plain account). If it is an EIP-7702 delegation (0xef0100 followed by "
+                  "an address) to a contract the server does not expect, the payment is held (ACCOUNT_DELEGATED): "
+                  "someone else may control the account.")
 D_NOW = "Current Unix time in seconds."
 D_POLICY = ('The receiving policy, for example {"max_amount_usdc": 100, "allowed_assets": ["USDC"], '
             '"trusted_attesters": ["0x..."]}.')
@@ -176,6 +183,18 @@ def _circle_wallets_env() -> Optional[dict[str, str]]:
             raise ValueError(f"SRA_CIRCLE_WALLETS entry {entry!r} is not walletId=0x<40 hex>")
         out[wallet_id] = address
     return out
+
+
+def _account_hold(account_code: Any) -> Optional[dict[str, Any]]:
+    """A hold if account_code shows an unexpected EIP-7702 delegation (SRA_EXPECTED_DELEGATES), else None."""
+    if account_code is None:
+        return None
+    try:
+        expected = _address_env("SRA_EXPECTED_DELEGATES")
+        v = sdk_check_account_code(account_code, expected_delegates=expected)
+    except Exception as e:
+        return _config_error(e)
+    return None if v is None else {**v.model_dump(mode="json"), "source": "rules"}
 
 
 def _gate() -> RulePreFilter:
@@ -320,6 +339,7 @@ def check_payment_rules(
     peg_deviation_pct: Annotated[Optional[float], Field(description=D_PEG)] = None,
     untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
     blocked_addresses: Annotated[Optional[list[str]], Field(description=D_BLOCKED)] = None,
+    account_code: Annotated[Optional[str], Field(description=D_ACCOUNT_CODE)] = None,
 ) -> dict[str, Any]:
     """Instant deterministic checks for a USDC payment, before sending it.
 
@@ -345,6 +365,9 @@ def check_payment_rules(
     blocked, bad = _parse_blocked_arg(blocked_addresses)
     if bad:
         return bad
+    held = _account_hold(account_code)
+    if held:
+        return held
     try:
         screened = _screen_addresses(_gate(), sender, recipient, blocked)
     except Exception as e:
@@ -371,6 +394,7 @@ def check_x402_payment(
     peg_deviation_pct: Annotated[Optional[float], Field(description=D_PEG)] = None,
     untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
     blocked_addresses: Annotated[Optional[list[str]], Field(description=D_BLOCKED)] = None,
+    account_code: Annotated[Optional[str], Field(description=D_ACCOUNT_CODE)] = None,
 ) -> dict[str, Any]:
     """Check an x402 payment requirement BEFORE signing it.
 
@@ -389,6 +413,9 @@ def check_x402_payment(
     blocked, bad = _parse_blocked_arg(blocked_addresses)
     if bad:
         return bad
+    held = _account_hold(account_code)
+    if held:
+        return held
     try:
         screened = _screen_addresses(_gate(), payer, pay_to, blocked)
     except Exception as e:
@@ -427,6 +454,7 @@ def check_transaction(
     peg_deviation_pct: Annotated[Optional[float], Field(description=D_PEG)] = None,
     untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
     blocked_addresses: Annotated[Optional[list[str]], Field(description=D_BLOCKED)] = None,
+    account_code: Annotated[Optional[str], Field(description=D_ACCOUNT_CODE)] = None,
     tx_type: Annotated[Union[int, str, None], Field(description=D_TX_TYPE)] = None,
     authorization_list: Annotated[Optional[list[dict[str, Any]]], Field(description=D_TX_AUTHS)] = None,
 ) -> dict[str, Any]:
@@ -453,6 +481,9 @@ def check_transaction(
     blocked, bad = _parse_blocked_arg(blocked_addresses)
     if bad:
         return bad
+    held = _account_hold(account_code)
+    if held:
+        return held
     try:
         gate = _gate()
     except Exception as e:
@@ -488,6 +519,7 @@ def check_x402_authorization(
     peg_deviation_pct: Annotated[Optional[float], Field(description=D_PEG)] = None,
     untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
     blocked_addresses: Annotated[Optional[list[str]], Field(description=D_BLOCKED)] = None,
+    account_code: Annotated[Optional[str], Field(description=D_ACCOUNT_CODE)] = None,
 ) -> dict[str, Any]:
     """Check the x402 payment signature you are about to create: the EIP-3009 authorization itself.
 
@@ -516,6 +548,9 @@ def check_x402_authorization(
     blocked, bad = _parse_blocked_arg(blocked_addresses)
     if bad:
         return bad
+    held = _account_hold(account_code)
+    if held:
+        return held
     try:
         gate = _gate()
     except Exception as e:
@@ -546,6 +581,7 @@ def check_circle_wallets_request(
     peg_deviation_pct: Annotated[Optional[float], Field(description=D_PEG)] = None,
     untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
     blocked_addresses: Annotated[Optional[list[str]], Field(description=D_BLOCKED)] = None,
+    account_code: Annotated[Optional[str], Field(description=D_ACCOUNT_CODE)] = None,
 ) -> dict[str, Any]:
     """Check a Circle Wallets (developer-controlled) API request before you send it to Circle.
 
@@ -568,6 +604,9 @@ def check_circle_wallets_request(
     blocked, bad = _parse_blocked_arg(blocked_addresses)
     if bad:
         return bad
+    held = _account_hold(account_code)
+    if held:
+        return held
     try:
         gate = _gate()
         wallets = _circle_wallets_env()
