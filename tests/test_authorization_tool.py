@@ -112,7 +112,7 @@ def test_time_is_not_an_argument():
     schema = getattr(tools["check_x402_authorization"], "inputSchema", None) or \
         getattr(tools["check_x402_authorization"], "input_schema")
     assert set(schema["properties"]) == {"typed_data", "sender", "peg_deviation_pct", "untrusted_text",
-                                         "blocked_addresses"}
+                                         "blocked_addresses", "account_code"}
     assert set(schema["required"]) == {"typed_data", "sender"}
 
 

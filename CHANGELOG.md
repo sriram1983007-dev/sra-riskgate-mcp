@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.2 — 2026-10-29
+
+- Every payment tool (`check_payment_rules`, `check_x402_payment`, `check_transaction`, `check_x402_authorization`,
+  `check_circle_wallets_request`) takes an optional `account_code`, the wallet's `eth_getCode` result. If the
+  wallet is delegated under EIP-7702 to a contract not in the new `SRA_EXPECTED_DELEGATES` setting, the payment is
+  held as `ACCOUNT_DELEGATED`. Suggested by Carlos (Bloqarl) on DEV.to.
+- Requires `sra-riskgate>=0.16.0`.
+
 ## 0.9.1 — 2026-10-27
 
 - `check_delegation`: checks a standalone EIP-7702 authorization before the agent signs it (always held as
