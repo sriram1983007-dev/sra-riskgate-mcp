@@ -8,6 +8,7 @@ Tools:
   check_x402_authorization   rule checks for the EIP-3009 authorization (EIP-712 typed data) before signing it
   check_circle_wallets_request  rule checks for a Circle Wallets (developer-controlled) API request before sending it
   check_delegation           an EIP-7702 authorization before signing it (always held)
+  check_user_operation       rule checks for an ERC-4337 UserOperation from a smart account, call by call
   check_payment_with_model   full review by SRA-RiskGate-4B via a local OpenAI-compatible server
 
 Configuration (environment variables):
@@ -31,6 +32,10 @@ Configuration (environment variables):
   SRA_EXPECTED_DELEGATES / SRA_EXPECTED_DELEGATES_FILE  EIP-7702 delegate contracts your wallet uses on
                      purpose. A tool given account_code (eth_getCode of your wallet) holds the payment if the
                      wallet is delegated to any other contract (ACCOUNT_DELEGATED).
+  SRA_EXPECTED_PAYMASTERS / SRA_EXPECTED_PAYMASTERS_FILE  paymasters your smart account uses on purpose. When
+                     set, a UserOperation with any other paymaster is held (UNKNOWN_PAYMASTER). Unset: not checked.
+  SRA_ALLOW_ACCOUNT_DEPLOYMENT  "1" to allow a UserOperation that also deploys the smart account (initCode or
+                     factory). Default: held (ACCOUNT_DEPLOYMENT).
   SRA_CIRCLE_USDC_TOKEN_IDS  Circle token ids you have confirmed are USDC, for transfers that name the token
                      by tokenId (comma- or space-separated). Unset: such transfers are held.
 
@@ -57,6 +62,7 @@ from sra_riskgate import (RulePreFilter, check_account_code as sdk_check_account
                           check_delegation as sdk_check_delegation,
                           check_authorization as sdk_check_authorization,
                           check_circle_request as sdk_check_circle_request,
+                          check_user_operation as sdk_check_user_operation, decode_account_calls,
                           decode_erc20_transfer, scan_payload_claims)
 from sra_riskgate.counterparty import parse_address_list
 from sra_riskgate.payload_claims import FLAG as CLAIMS_FLAG
@@ -135,6 +141,11 @@ D_ACCOUNT_CODE = ("Optional but recommended. Your own wallet's on-chain code, ex
                   "your address (\"0x\" for a plain account). If it is an EIP-7702 delegation (0xef0100 followed by "
                   "an address) to a contract the server does not expect, the payment is held (ACCOUNT_DELEGATED): "
                   "someone else may control the account.")
+D_USER_OP = ("The ERC-4337 UserOperation your smart account is about to sign, exactly as your bundler client "
+             "prepared it: an object with sender (the smart account), callData and, if present, initCode or "
+             "factory/factoryData, paymasterAndData or paymaster, and eip7702Auth. Other fields are ignored.")
+D_USER_OP_CHAIN = ("EVM chain id the UserOperation is for: 1, 8453, 84532, 5042 or 5042002.")
+D_SMART_ACCOUNT = "Your smart account's address (the UserOperation's sender), 0x followed by 40 hex characters."
 D_NOW = "Current Unix time in seconds."
 D_POLICY = ('The receiving policy, for example {"max_amount_usdc": 100, "allowed_assets": ["USDC"], '
             '"trusted_attesters": ["0x..."]}.')
@@ -625,6 +636,60 @@ def check_circle_wallets_request(
     except Exception as e:  # fail closed
         return {"decision": "hold", "risk_score": 0.65, "flags": ["check_failed"],
                 "explanation": f"The Circle Wallets request check failed ({type(e).__name__}), so it is held.",
+                "required_actions": ["manual_review"], "source": "rules"}
+
+
+@mcp.tool(annotations=CHECK_ONLY)
+def check_user_operation(
+    user_operation: Annotated[Union[dict, str], Field(description=D_USER_OP)],
+    chain_id: Annotated[int, Field(description=D_USER_OP_CHAIN)],
+    sender: Annotated[str, Field(description=D_SMART_ACCOUNT)],
+    peg_deviation_pct: Annotated[Optional[float], Field(description=D_PEG)] = None,
+    untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
+    blocked_addresses: Annotated[Optional[list[str]], Field(description=D_BLOCKED)] = None,
+) -> dict[str, Any]:
+    """Check an ERC-4337 UserOperation from your smart account before signing it, call by call.
+
+    Use this when your wallet is a smart account (Coinbase Smart Wallet, CDP smart account, Safe, Kernel, Nexus,
+    SimpleAccount): what you sign is a UserOperation whose callData can bundle several calls, and an unlimited
+    approve() can hide next to an ordinary payment. The calls are decoded and each is checked like
+    check_transaction: a USDC transfer() gets the payment rules (OFAC SDN match, blocklist, known payees, amount
+    ceiling, depeg, self-asserted claims in untrusted_text); approvals, permits, other contracts and native ETH are
+    held, naming the call ("call 2 of 3"). Payments to the same payee are summed across the batch (BATCH_TOTAL),
+    so a payment cannot be split under the ceiling.
+
+    Also held: a call from the account to itself (ACCOUNT_SELF_CALL: it can change owners or modules), a
+    delegatecall (DELEGATECALL; a Safe batch through MultiSendCallOnly is decoded), callData it cannot read
+    (UNSUPPORTED_ACCOUNT_CALL), deploying the account in the same operation (ACCOUNT_DEPLOYMENT, unless the server
+    allows it), an EIP-7702 authorization inside the operation (CODE_DELEGATION), a paymaster the server does not
+    expect (UNKNOWN_PAYMASTER, when configured), and a sender that is not the operation's (USER_OPERATION_MISMATCH).
+
+    Returns decision (approve | hold | reject), flags, explanation and required_actions, plus the decoded calls.
+    Only sign if decision is "approve".
+    """
+    blocked, bad = _parse_blocked_arg(blocked_addresses)
+    if bad:
+        return bad
+    try:
+        gate = _gate()
+        paymasters = _address_env("SRA_EXPECTED_PAYMASTERS")
+    except Exception as e:
+        return _config_error(e)
+    try:
+        op = json.loads(user_operation) if isinstance(user_operation, str) else user_operation
+        allow = os.environ.get("SRA_ALLOW_ACCOUNT_DEPLOYMENT", "").strip().lower() in ("1", "true", "yes")
+        v = sdk_check_user_operation(op, chain_id=chain_id, sender=sender, expected_paymasters=paymasters,
+                                     allow_account_deployment=allow, gate=gate, blocked_addresses=blocked,
+                                     peg_deviation_pct=peg_deviation_pct, untrusted_request=untrusted_text)
+        out = {**v.model_dump(mode="json"), "source": "rules"}
+        try:
+            out["decoded_calls"] = decode_account_calls(op.get("callData", op.get("call_data")))[:20]
+        except Exception:
+            pass
+        return out
+    except Exception as e:  # fail closed
+        return {"decision": "hold", "risk_score": 0.65, "flags": ["check_failed"],
+                "explanation": f"The UserOperation check failed ({type(e).__name__}), so it is held.",
                 "required_actions": ["manual_review"], "source": "rules"}
 
 

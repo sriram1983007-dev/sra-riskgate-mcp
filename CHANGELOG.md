@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.0 — 2026-11-01
+
+- New tool `check_user_operation`: checks an ERC-4337 UserOperation from a smart account (Coinbase Smart Wallet,
+  CDP smart accounts, Safe, Kernel, Nexus, SimpleAccount) before it is signed. Every call in the operation is
+  decoded and checked like `check_transaction`, payments to the same payee are summed (`BATCH_TOTAL`), and
+  self-calls, delegatecalls, unreadable callData, in-operation deployment, EIP-7702 authorizations and
+  unexpected paymasters are held. Returns the decoded calls.
+- New settings: `SRA_EXPECTED_PAYMASTERS` (and `_FILE`) and `SRA_ALLOW_ACCOUNT_DEPLOYMENT`.
+- Requires `sra-riskgate>=0.17.0`.
+
 ## 0.9.2 — 2026-10-29
 
 - Every payment tool (`check_payment_rules`, `check_x402_payment`, `check_transaction`, `check_x402_authorization`,
