@@ -16,6 +16,7 @@ payment **before** paying it: `approve`, `hold` or `reject`.
 | `check_x402_authorization` | The same checks for the x402 signature itself (the EIP-3009 `TransferWithAuthorization` typed data) before signing; expired, post-dated or long-lived authorizations, permits and non-USDC domains are held | Nothing |
 | `check_circle_wallets_request` | The same checks for a Circle Wallets (developer-controlled) API request before it is sent: transfers, contract executions, typed-data and transaction signing; `approve()`, other tokens, raw messages and wallet upgrades are held | Nothing |
 | `check_delegation` | An EIP-7702 authorization before signing it: always held, naming the delegate contract and whether it is valid on every chain | Nothing |
+| `check_user_operation` | An ERC-4337 UserOperation from a smart account (Coinbase Smart Wallet, Safe, Kernel, Nexus, SimpleAccount), call by call: an approval hidden in a batch is held, payments to the same payee are summed, self-calls, delegatecalls and unknown paymasters are held | Nothing |
 | `check_payment_with_model` | Full review by [SRA-RiskGate-4B](https://huggingface.co/sriram1983007/SRA-RiskGate-4B) of the policy, the payment and your verification results | The model running locally |
 
 Every tool fails closed. Malformed input is rejected, and if the model is unreachable or answers
@@ -121,6 +122,8 @@ ollama pull sriram1983007/sra-riskgate
 | `SRA_MAX_AUTH_VALIDITY_SECONDS` | `3600` | Longest an x402 authorization may stay valid before it is held |
 | `SRA_MAX_GATEWAY_VALIDITY_SECONDS` | `691200` (8 days) | The same for Circle Gateway batched payments, which must stay valid for at least 3 days |
 | `SRA_EXPECTED_DELEGATES` / `SRA_EXPECTED_DELEGATES_FILE` | unset | EIP-7702 delegate contracts your wallet uses on purpose; with `account_code`, any other delegation is held |
+| `SRA_EXPECTED_PAYMASTERS` / `SRA_EXPECTED_PAYMASTERS_FILE` | unset | Paymasters your smart account uses on purpose; any other paymaster in a UserOperation is held |
+| `SRA_ALLOW_ACCOUNT_DEPLOYMENT` | unset | `1` to allow a UserOperation that also deploys the smart account (otherwise held) |
 | `SRA_CIRCLE_WALLETS` | unset | Circle wallets the agent may use, as `walletId=0xaddress` pairs; any other wallet id is held |
 | `SRA_CIRCLE_USDC_TOKEN_IDS` | unset | Circle token ids you have confirmed are USDC, for transfers by `tokenId` (otherwise held) |
 
