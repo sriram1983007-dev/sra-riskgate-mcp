@@ -3,6 +3,7 @@
 [![Tests](https://github.com/sriram1983007-dev/sra-riskgate-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/sriram1983007-dev/sra-riskgate-mcp/actions/workflows/tests.yml)
 [![PyPI](https://img.shields.io/pypi/v/sra-riskgate-mcp)](https://pypi.org/project/sra-riskgate-mcp/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![M8ven Verified](https://m8ven.ai/badge/mcp/sriram1983007-dev-sra-riskgate-mcp-1vnq1q?v=2728cabf723fc8d83e26ea48cd6c398e&variant=verified)](https://m8ven.ai/mcp/sriram1983007-dev-sra-riskgate-mcp-1vnq1q?s=readme)
 
 An [MCP](https://modelcontextprotocol.io) server that lets AI assistants and agents check a stablecoin
 payment **before** paying it: `approve`, `hold` or `reject`.
