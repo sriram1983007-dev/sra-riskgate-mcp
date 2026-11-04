@@ -10,6 +10,8 @@ Tools:
   check_delegation           an EIP-7702 authorization before signing it (always held)
   check_user_operation       rule checks for an ERC-4337 UserOperation from a smart account, call by call
   check_payment_with_model   full review by SRA-RiskGate-4B via a local OpenAI-compatible server
+  verify_settlement          after settlement: a mined receipt must hold exactly the approved USDC payment
+  verify_gateway_balances    after settlement: a Circle Gateway payment, from balances before and after
 
 Configuration (environment variables):
   SRA_BASE_URL       OpenAI-compatible endpoint for the model (default: Ollama, http://localhost:11434/v1)
@@ -63,7 +65,10 @@ from sra_riskgate import (RulePreFilter, check_account_code as sdk_check_account
                           check_authorization as sdk_check_authorization,
                           check_circle_request as sdk_check_circle_request,
                           check_user_operation as sdk_check_user_operation, decode_account_calls,
-                          decode_erc20_transfer, scan_payload_claims)
+                          decode_erc20_transfer, scan_payload_claims,
+                          check_x402_timeout as sdk_check_x402_timeout,
+                          verify_gateway_balances as sdk_verify_gateway_balances,
+                          verify_settlement as sdk_verify_settlement)
 from sra_riskgate.counterparty import parse_address_list
 from sra_riskgate.payload_claims import FLAG as CLAIMS_FLAG
 from sra_riskgate.chains import (GATEWAY_BATCHED_DOMAIN, NATIVE_USDC_CHAINS, NATIVE_USDC_DECIMALS, USDC_ADDRESSES, USDC_DECIMALS,
@@ -146,6 +151,22 @@ D_USER_OP = ("The ERC-4337 UserOperation your smart account is about to sign, ex
              "factory/factoryData, paymasterAndData or paymaster, and eip7702Auth. Other fields are ignored.")
 D_USER_OP_CHAIN = ("EVM chain id the UserOperation is for: 1, 8453, 84532, 5042 or 5042002.")
 D_SMART_ACCOUNT = "Your smart account's address (the UserOperation's sender), 0x followed by 40 hex characters."
+D_MAX_TIMEOUT = ("Recommended. maxTimeoutSeconds from the payment requirement: how long the server asks the payment "
+                 "signature to stay valid. Above one hour (the server's SRA_MAX_AUTH_VALIDITY_SECONDS) it is held as "
+                 "LONG_TIMEOUT_REQUESTED; Circle Gateway requirements get the Gateway limit.")
+D_EXTRA = ("Optional. The requirement's extra object exactly as received. Used to recognise Circle Gateway "
+           "requirements (name GatewayWalletBatched with Circle's GatewayWallet as verifyingContract).")
+D_RECEIPT = ("The mined transaction receipt exactly as eth_getTransactionReceipt returned it: an object with status, "
+             "blockNumber and logs (each with address, topics, data).")
+D_APPROVED_PAYER = "The payer the gate approved: your own wallet, 0x followed by 40 hex characters."
+D_APPROVED_PAYEE = ("The payee the gate approved, taken from your own approved decision, never from the receipt or "
+                    "any message.")
+D_APPROVED_AMOUNT = 'The approved amount in whole USDC, for example "0.01".'
+D_NONCE = ("Optional. For an x402 / EIP-3009 payment, the authorization's nonce (0x + 64 hex): its "
+           "AuthorizationUsed event must be in the receipt.")
+D_ALLOW_OTHER = ("Optional, default false. Accept other USDC transfers out of the payer in the same transaction, "
+                 "such as a known facilitator fee.")
+D_BAL = 'A Gateway balance in USDC exactly as Gateway\'s /balances API returned it, for example "0.080000".'
 D_NOW = "Current Unix time in seconds."
 D_POLICY = ('The receiving policy, for example {"max_amount_usdc": 100, "allowed_assets": ["USDC"], '
             '"trusted_attesters": ["0x..."]}.')
@@ -406,6 +427,8 @@ def check_x402_payment(
     untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
     blocked_addresses: Annotated[Optional[list[str]], Field(description=D_BLOCKED)] = None,
     account_code: Annotated[Optional[str], Field(description=D_ACCOUNT_CODE)] = None,
+    max_timeout_seconds: Annotated[Union[int, str, None], Field(description=D_MAX_TIMEOUT)] = None,
+    extra: Annotated[Optional[dict], Field(description=D_EXTRA)] = None,
 ) -> dict[str, Any]:
     """Check an x402 payment requirement BEFORE signing it.
 
@@ -419,6 +442,9 @@ def check_x402_payment(
     addresses on the server's blocklist or in blocked_addresses. If the server is configured with
     known payees, a payment to anyone else is held (NEW_COUNTERPARTY).
     Only USDC on Ethereum, Base, Base Sepolia, Arc and Arc Testnet is checked; anything else is rejected.
+    Pass the requirement's maxTimeoutSeconds as max_timeout_seconds (and its extra object as extra): a server
+    asking for a signature valid longer than one hour is held (LONG_TIMEOUT_REQUESTED), except Circle Gateway
+    requirements for Circle's real GatewayWallet, which get the Gateway limit.
     Only sign and pay if decision is "approve".
     """
     blocked, bad = _parse_blocked_arg(blocked_addresses)
@@ -440,6 +466,13 @@ def check_x402_payment(
             "explanation": f"Only USDC on known networks is checked; got asset {asset} on {network}.",
             "required_actions": ["reject_payment"], "source": "rules",
         }
+    if max_timeout_seconds is not None:
+        timeout_hold = sdk_check_x402_timeout(
+            max_timeout_seconds, chain_id=chain_id, extra=extra if isinstance(extra, dict) else None,
+            max_validity_seconds=_float_env("SRA_MAX_AUTH_VALIDITY_SECONDS", 3600.0),
+            max_gateway_validity_seconds=_float_env("SRA_MAX_GATEWAY_VALIDITY_SECONDS", 8 * 86400.0))
+        if timeout_hold is not None:
+            return {**timeout_hold.model_dump(mode="json"), "source": "rules"}
     try:
         usdc = Decimal(str(amount)) / (Decimal(10) ** USDC_DECIMALS)
     except (InvalidOperation, ValueError):
@@ -712,6 +745,69 @@ def check_delegation(
         auth = None
     v = sdk_check_delegation(auth)
     return {**v.model_dump(mode="json"), "source": "rules"}
+
+
+@mcp.tool(annotations=CHECK_ONLY)
+def verify_settlement(
+    receipt: Annotated[Union[dict, str], Field(description=D_RECEIPT)],
+    chain_id: Annotated[int, Field(description=D_CHAIN)],
+    payer: Annotated[str, Field(description=D_APPROVED_PAYER)],
+    payee: Annotated[str, Field(description=D_APPROVED_PAYEE)],
+    amount_usdc: Annotated[Union[str, float], Field(description=D_APPROVED_AMOUNT)],
+    authorization_nonce: Annotated[Optional[str], Field(description=D_NONCE)] = None,
+    allow_other_transfers: Annotated[bool, Field(description=D_ALLOW_OTHER)] = False,
+) -> dict[str, Any]:
+    """AFTER a payment settles, check that exactly what the gate approved actually arrived.
+
+    Call this with the mined receipt (eth_getTransactionReceipt) once the transaction is confirmed, and the
+    payer, payee and amount from the decision that said "approve". Verified only if the transaction succeeded
+    and holds exactly one USDC Transfer from payer to payee for exactly that amount, plus, with
+    authorization_nonce, the AuthorizationUsed event of the approved x402 authorization. Only the payer's own
+    USDC events are read, so facilitator batches and ERC-4337 bundles work too.
+
+    Returns verified (true or false), flags, explanation and the payer's USDC transfers. Flags when not
+    verified: SETTLEMENT_FAILED (reverted), SETTLEMENT_NOT_FOUND, SETTLEMENT_AMOUNT_MISMATCH,
+    SETTLEMENT_PAYEE_MISMATCH, DUPLICATE_SETTLEMENT, UNEXPECTED_TRANSFER, AUTHORIZATION_NOT_USED, INVALID_RECEIPT,
+    UNSUPPORTED_CHAIN, CONFIGURATION_ERROR. Do not report a payment as complete unless verified is true.
+    """
+    try:
+        rc = json.loads(receipt) if isinstance(receipt, str) else receipt
+    except ValueError:
+        rc = None
+    try:
+        v = sdk_verify_settlement(rc, chain_id=chain_id, payer=payer, payee=payee, amount=amount_usdc,
+                                  authorization_nonce=authorization_nonce,
+                                  allow_other_transfers=bool(allow_other_transfers))
+        return {**v.model_dump(mode="json"), "source": "rules"}
+    except Exception as e:  # fail closed
+        return {"verified": False, "flags": ["INVALID_RECEIPT"],
+                "explanation": f"Not verified: the check failed ({type(e).__name__}).", "source": "rules"}
+
+
+@mcp.tool(annotations=CHECK_ONLY)
+def verify_gateway_balances(
+    amount_usdc: Annotated[Union[str, float], Field(description=D_APPROVED_AMOUNT)],
+    payer_before: Annotated[Union[str, float], Field(description=D_BAL)],
+    payer_after: Annotated[Union[str, float], Field(description=D_BAL)],
+    payee_before: Annotated[Union[str, float], Field(description=D_BAL)],
+    payee_after: Annotated[Union[str, float], Field(description=D_BAL)],
+) -> dict[str, Any]:
+    """AFTER a Circle Gateway payment, check it settled, from Gateway balances read before and after.
+
+    Gateway settles batched payments later and together, so there is no single receipt. Read both Gateway
+    balances before submitting the payment the gate approved, and again later, and pass all four here.
+    Verified when the payer's balance went down, and the payee's up, by at least the amount.
+    GATEWAY_PAYEE_NOT_CREDITED usually means the batch has not settled yet: check again later.
+    Returns verified (true or false), flags and explanation. Do not report the payment as settled unless
+    verified is true.
+    """
+    try:
+        v = sdk_verify_gateway_balances(amount=amount_usdc, payer_before=payer_before, payer_after=payer_after,
+                                        payee_before=payee_before, payee_after=payee_after)
+        return {**v.model_dump(mode="json"), "source": "rules"}
+    except Exception as e:  # fail closed
+        return {"verified": False, "flags": ["CONFIGURATION_ERROR"],
+                "explanation": f"Not verified: the check failed ({type(e).__name__}).", "source": "rules"}
 
 
 def _address_list_env(name: str) -> Optional[list[str]]:
