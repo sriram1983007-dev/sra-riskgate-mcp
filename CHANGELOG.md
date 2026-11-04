@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.1 — 2026-11-04
+
+- The source distribution now includes the test data (`tests/data/*.json`), so the published test suite runs
+  from the sdist. 0.10.0 and 0.11.0 shipped without `smart_account_calldata.json` and their sdist tests fail at
+  collection; the server code is unchanged. Found in Audit #12.
+- A packaging test checks that every file under `tests/` is covered by `MANIFEST.in`.
+
 ## 0.11.0 — 2026-11-04
 
 - New tool `verify_settlement`: after a payment settles, checks the mined receipt holds exactly the approved USDC
