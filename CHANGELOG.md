@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.0 — 2026-11-04
+
+- New tool `verify_settlement`: after a payment settles, checks the mined receipt holds exactly the approved USDC
+  payment (one Transfer from payer to payee for the approved amount, and with `authorization_nonce` the approved
+  x402 authorization's AuthorizationUsed event). Returns `verified` and a flag when not: `SETTLEMENT_FAILED`,
+  `SETTLEMENT_NOT_FOUND`, `SETTLEMENT_AMOUNT_MISMATCH`, `SETTLEMENT_PAYEE_MISMATCH`, `DUPLICATE_SETTLEMENT`,
+  `UNEXPECTED_TRANSFER`, `AUTHORIZATION_NOT_USED`, `INVALID_RECEIPT`.
+- New tool `verify_gateway_balances`: a Circle Gateway payment, from Gateway balances read before and after.
+- `check_x402_payment` takes `max_timeout_seconds` (and `extra`): a requirement asking for a signature valid longer
+  than `SRA_MAX_AUTH_VALIDITY_SECONDS` (default one hour) is held as `LONG_TIMEOUT_REQUESTED`; Circle Gateway
+  requirements for Circle's GatewayWallet get `SRA_MAX_GATEWAY_VALIDITY_SECONDS`. Suggested by Carlos (Bloqarl).
+- Requires `sra-riskgate>=0.18.0`.
+
 ## 0.10.0 — 2026-11-01
 
 - New tool `check_user_operation`: checks an ERC-4337 UserOperation from a smart account (Coinbase Smart Wallet,
