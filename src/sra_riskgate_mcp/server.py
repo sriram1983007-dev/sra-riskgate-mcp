@@ -19,7 +19,9 @@ Configuration (environment variables):
   SRA_MODEL          model name on that server (default: sriram1983007/sra-riskgate)
   SRA_API_KEY        API key, if the server needs one
   SRA_TIMEOUT        seconds to wait for the model (default: 120)
-  SRA_MAX_AMOUNT     rule ceiling in USDC (default: 1000)
+  SRA_MAX_AMOUNT     rule ceiling in whole tokens of the stablecoin paid (default: 1000)
+  SRA_ALLOWED_TOKENS stablecoins the payment checks may approve: USDC, USDT, USDB, USDG (comma- or space-
+                     separated). Default: USDC only; any other token is held (UNSUPPORTED_ASSET).
   SRA_DEPEG_HOLD_PCT / SRA_DEPEG_REJECT_PCT   depeg thresholds in percent (defaults: 1 and 5)
   SRA_KNOWN_RECIPIENTS / SRA_KNOWN_RECIPIENTS_FILE   payees you have verified; a payment to anyone
                      else is held (NEW_COUNTERPARTY). Unset: check off. Comma- or space-separated
@@ -77,8 +79,9 @@ from sra_riskgate import (RulePreFilter, check_account_code as sdk_check_account
                           check_allowances as sdk_check_allowances)
 from sra_riskgate.counterparty import parse_address_list
 from sra_riskgate.payload_claims import FLAG as CLAIMS_FLAG
-from sra_riskgate.chains import (GATEWAY_BATCHED_DOMAIN, NATIVE_USDC_CHAINS, NATIVE_USDC_DECIMALS, USDC_ADDRESSES, USDC_DECIMALS,
-                                  chain_id_from_network, is_usdc)
+from sra_riskgate.chains import (GATEWAY_BATCHED_DOMAIN, NATIVE_USDC_CHAINS, NATIVE_USDC_DECIMALS, STABLECOINS,
+                                  USDC_ADDRESSES, USDC_DECIMALS, chain_id_from_network, is_usdc,
+                                  parse_allowed_tokens, stablecoin_at)
 
 from mcp.types import ToolAnnotations
 
@@ -108,12 +111,16 @@ except TypeError:  # mcp 1.x
 # Parameter descriptions: what an agent reads when filling in each argument.
 D_ADDRESSES = ("One or more EVM addresses (0x followed by 40 hex characters) to check, for example a "
                "counterparty or the payee named in an invoice. Up to 100.")
-D_CHAIN = ("EVM chain id: 1 (Ethereum), 8453 (Base), 84532 (Base Sepolia), 5042 (Arc) or 5042002 (Arc Testnet). "
-           "Other chains return hold.")
+D_CHAIN = ("EVM chain id: 1 (Ethereum), 8453 (Base), 84532 (Base Sepolia), 5042 (Arc), 5042002 (Arc Testnet) or "
+           "4663 (Robinhood Chain, USDG only). Other chains return hold.")
+D_PAY_TOKEN = ('Optional. The stablecoin paid: "USDC" (default), "USDT" (Ethereum), "USDB" (Bridge; Ethereum, Base) '
+               'or "USDG" (Ethereum, Robinhood Chain). Tokens other than USDC are held unless the server enables '
+               'them (SRA_ALLOWED_TOKENS).')
 D_SENDER = "Your own wallet address, 0x followed by 40 hex characters."
 D_RECIPIENT = "The address you are about to pay, 0x followed by 40 hex characters."
-D_AMOUNT = "Amount in whole USDC (not atomic units), for example 20.5."
-D_PEG = ("Optional. USDC's deviation from $1.00 in percent from your own price feed, for example -0.3. "
+D_AMOUNT = ("Amount in whole USDC (not atomic units), for example 20.5; in whole tokens of the stablecoin paid "
+            "when token is set.")
+D_PEG = ("Optional. The paid stablecoin's deviation from $1.00 in percent from your own price feed, for example -0.3. "
          "Omit if unknown; the depeg check is then skipped and reported.")
 D_UNTRUSTED = ("Optional. The payment request's own text exactly as received: memo, invoice, description, "
                "x402 extra fields or the whole request. Never your own verification results.")
@@ -124,7 +131,8 @@ D_PAY_TO = "Recipient address (payTo) from the payment requirement."
 D_PAYER = "Your own (the paying agent's) wallet address."
 D_BLOCKED = ("Optional. Extra addresses to reject for this payment, on top of the server's configured "
              "blocklist, for example addresses a human told you never to pay. Can only make the check stricter.")
-D_TX_TO = "The transaction's 'to' address: the contract the transaction calls. For a USDC payment, the USDC contract."
+D_TX_TO = ("The transaction's 'to' address: the contract the transaction calls. For a stablecoin payment, that "
+           "token's contract (USDC, or USDT, USDB, USDG when the server enables them).")
 D_TX_DATA = ("The transaction's calldata exactly as it will be signed, hex starting with 0x. For a USDC payment, "
              "transfer(recipient, amount): 0xa9059cbb followed by two 32-byte words. For a plain native USDC "
              "send on Arc, \"0x\".")
@@ -257,6 +265,12 @@ def _gate() -> RulePreFilter:
     )
 
 
+def _allowed_tokens() -> frozenset[str]:
+    """SRA_ALLOWED_TOKENS as a set of symbols; USDC alone when unset. Raises on an unknown symbol."""
+    raw = os.environ.get("SRA_ALLOWED_TOKENS")
+    return parse_allowed_tokens(raw if raw and raw.strip() else None)
+
+
 def _config_error(e: Exception) -> dict[str, Any]:
     return {
         "decision": "reject", "risk_score": 1.0, "flags": ["configuration_error"],
@@ -283,14 +297,14 @@ def _parse_blocked_arg(blocked_addresses: Any) -> tuple[Optional[list[str]], Opt
 
 def _rules_verdict(chain_id: int, sender: str, recipient: str, amount: float,
                    peg_deviation_pct: Optional[float],
-                   blocked_addresses: Optional[list[str]] = None) -> dict[str, Any]:
+                   blocked_addresses: Optional[list[str]] = None, token: str = "USDC") -> dict[str, Any]:
     try:
         gate = _gate()
     except Exception as e:  # e.g. SRA_DEPEG_HOLD_PCT >= SRA_DEPEG_REJECT_PCT, or a bad address list
         return _config_error(e)
     try:
         v = gate.inspect(TransactionPayload(
-            chain_id=chain_id, token="USDC", sender=sender, recipient=recipient,
+            chain_id=chain_id, token=token, sender=sender, recipient=recipient,
             amount=amount, peg_deviation_pct=peg_deviation_pct,
         ), blocked_addresses=blocked_addresses)
     except Exception as e:  # malformed address, self-transfer, bad amount...
@@ -390,12 +404,13 @@ def check_payment_rules(
     untrusted_text: Annotated[Union[str, dict, list, None], Field(description=D_UNTRUSTED)] = None,
     blocked_addresses: Annotated[Optional[list[str]], Field(description=D_BLOCKED)] = None,
     account_code: Annotated[Optional[str], Field(description=D_ACCOUNT_CODE)] = None,
+    token: Annotated[Optional[str], Field(description=D_PAY_TOKEN)] = None,
 ) -> dict[str, Any]:
-    """Instant deterministic checks for a USDC payment, before sending it.
+    """Instant deterministic checks for a stablecoin payment (USDC by default), before sending it.
 
     Rejects any payment to or from an address on the OFAC SDN list (bundled, dated snapshot).
     Checks address validity, self-transfers, the zero address, a per-payment amount ceiling and,
-    if peg_deviation_pct is given (USDC's deviation from $1.00 in percent, e.g. -1.2), depegs in
+    if peg_deviation_pct is given (the paid token's deviation from $1.00 in percent, e.g. -1.2), depegs in
     both directions. No model or GPU needed.
 
     Pass the payment request's own text (memo, invoice, description, or the whole request as
@@ -407,8 +422,10 @@ def check_payment_rules(
     (NEW_COUNTERPARTY): confirm the new payee with a human. Addresses on the server's blocklist, or
     in blocked_addresses, are rejected.
 
-    Only Ethereum (1), Base (8453), Base Sepolia (84532), Arc (5042) and Arc Testnet (5042002) are
-    supported; other chains get "hold".
+    USDC on Ethereum (1), Base (8453), Base Sepolia (84532), Arc (5042) and Arc Testnet (5042002). If the
+    server enables them (SRA_ALLOWED_TOKENS), pass token for USDT (Ethereum), USDB (Ethereum, Base) or USDG
+    (Ethereum, Robinhood Chain 4663); amount_usdc is then the amount in whole tokens of that coin. Other tokens
+    and chains get "hold".
     Returns decision (approve | hold | reject), flags, explanation and required_actions.
     Only send the payment if decision is "approve".
     """
@@ -424,13 +441,28 @@ def check_payment_rules(
         return _config_error(e)
     if screened:
         return screened
-    if chain_id not in USDC_ADDRESSES:
-        return {
-            "decision": "hold", "risk_score": 0.65, "flags": ["unsupported_chain"],
-            "explanation": f"Chain {chain_id} is not supported; only Ethereum, Base, Base Sepolia, Arc and Arc Testnet are checked.",
-            "required_actions": ["manual_review"], "source": "rules",
-        }
-    return _with_claims(_rules_verdict(chain_id, sender, recipient, amount_usdc, peg_deviation_pct, blocked),
+    try:
+        allowed = _allowed_tokens()
+    except Exception as e:
+        return _config_error(e)
+    sym = token.strip().upper() if isinstance(token, str) and token.strip() else "USDC"
+
+    def _hold(flag: str, why: str) -> dict[str, Any]:
+        return {"decision": "hold", "risk_score": 0.65, "flags": [flag], "explanation": why,
+                "required_actions": ["manual_review"], "source": "rules"}
+
+    if sym not in STABLECOINS:
+        return _hold("unsupported_asset", f"Only {', '.join(STABLECOINS)} are checked; got {token!r}.")
+    if sym not in allowed:
+        return _hold("unsupported_asset", f"{sym} is not enabled on this server (SRA_ALLOWED_TOKENS: "
+                                          f"{', '.join(sorted(allowed))}); ask its operator to add it.")
+    if chain_id not in STABLECOINS[sym]:
+        if sym == "USDC":
+            return _hold("unsupported_chain", f"Chain {chain_id} is not supported; only Ethereum, Base, Base "
+                                              f"Sepolia, Arc and Arc Testnet are checked for USDC.")
+        chains = ", ".join(str(c) for c in sorted(STABLECOINS[sym]))
+        return _hold("unsupported_chain", f"Chain {chain_id} is not checked for {sym}; supported: {chains}.")
+    return _with_claims(_rules_verdict(chain_id, sender, recipient, amount_usdc, peg_deviation_pct, blocked, sym),
                         untrusted_text)
 
 
@@ -523,22 +555,24 @@ def check_transaction(
     """Check the exact transaction you are about to sign: the contract it calls, its calldata and value.
 
     Use this instead of check_payment_rules when you have the transaction itself, so the check covers
-    what will actually be signed, not a description of it. A plain USDC transfer() is decoded and gets
+    what will actually be signed, not a description of it. A plain stablecoin transfer() is decoded and gets
     the same checks as check_payment_rules (OFAC SDN match, blocklist, known payees, amount ceiling,
     depeg, self-asserted claims in untrusted_text).
 
     Everything else is held: token approvals (approve, increaseAllowance, permit: flag TOKEN_APPROVAL,
     plus UNLIMITED_APPROVAL), other functions such as transferFrom (UNSUPPORTED_FUNCTION), a contract
     that is not USDC on that chain (UNSUPPORTED_ASSET), native ETH (NATIVE_VALUE_TRANSFER) and malformed
-    calldata (INVALID_TRANSACTION). An approval lets someone else move the wallet's USDC later.
+    calldata (INVALID_TRANSACTION). An approval lets someone else move the wallet's tokens later.
+    The token is read from the contract called: USDC, or USDT, USDB and USDG when the server enables them
+    (SRA_ALLOWED_TOKENS); a token not enabled is held (UNSUPPORTED_ASSET). Approvals are held for every token.
     EIP-7702 code delegation (a type 4 transaction, or any authorization_list) is held as CODE_DELEGATION:
     always pass the transaction's type and authorizationList if it has them.
 
     On Arc (5042, Arc Testnet 5042002) USDC is the native asset: a plain native send (value in 18-decimal
     units, data "0x") to an address is checked as a USDC payment, and native value sent with a contract
-    call is held. Only Ethereum (1), Base (8453), Base Sepolia (84532), Arc and Arc Testnet are supported.
-    Returns decision (approve | hold | reject), flags, explanation and required_actions; for a
-    transfer, also the decoded recipient and amount. Only sign if decision is "approve".
+    call is held. Chains: Ethereum (1), Base (8453), Base Sepolia (84532), Arc, Arc Testnet and Robinhood
+    Chain (4663, USDG). Returns decision (approve | hold | reject), flags, explanation and required_actions;
+    for a transfer, also the decoded recipient, token and amount. Only sign if decision is "approve".
     """
     blocked, bad = _parse_blocked_arg(blocked_addresses)
     if bad:
@@ -548,6 +582,7 @@ def check_transaction(
         return held
     try:
         gate = _gate()
+        allowed = _allowed_tokens()
     except Exception as e:
         return _config_error(e)
     try:
@@ -558,15 +593,19 @@ def check_transaction(
             tx["authorizationList"] = authorization_list
         v = sdk_check_transaction(tx, chain_id=chain_id, sender=sender,
                                   gate=gate, blocked_addresses=blocked, peg_deviation_pct=peg_deviation_pct,
-                                  untrusted_request=untrusted_text)
+                                  untrusted_request=untrusted_text, allowed_tokens=allowed)
         out = {**v.model_dump(mode="json"), "source": "rules"}
         decoded = decode_erc20_transfer(data)
+        listed = stablecoin_at(chain_id, to)
         if decoded is not None:
-            out["decoded"] = {"recipient": decoded[0],
-                              "amount_usdc": str(Decimal(decoded[1]) / (Decimal(10) ** USDC_DECIMALS))}
+            sym, decimals = listed or ("USDC", USDC_DECIMALS)
+            amount = str(Decimal(decoded[1]) / (Decimal(10) ** decimals))
+            out["decoded"] = {"recipient": decoded[0], "token": sym, "amount": amount}
+            if sym == "USDC":
+                out["decoded"]["amount_usdc"] = amount
         elif chain_id in NATIVE_USDC_CHAINS and _native_value(value) and not (data or "").strip().lower().removeprefix("0x"):
-            out["decoded"] = {"recipient": to, "amount_usdc": format(
-                (Decimal(_native_value(value)) / (Decimal(10) ** NATIVE_USDC_DECIMALS)).normalize(), "f")}
+            amount = format((Decimal(_native_value(value)) / (Decimal(10) ** NATIVE_USDC_DECIMALS)).normalize(), "f")
+            out["decoded"] = {"recipient": to, "token": "USDC", "amount": amount, "amount_usdc": amount}
         return out
     except Exception as e:  # fail closed
         return {"decision": "hold", "risk_score": 0.65, "flags": ["check_failed"],
@@ -595,7 +634,8 @@ def check_x402_authorization(
     (AUTHORIZATION_NOT_YET_VALID) or stays valid longer than the server allows (LONG_LIVED_AUTHORIZATION,
     default one hour); a Permit, which grants an allowance (TOKEN_APPROVAL, plus UNLIMITED_APPROVAL);
     a domain that is not USDC on that chain (UNSUPPORTED_ASSET); any other primary type
-    (UNSUPPORTED_SIGNATURE); a "from" that is not sender (AUTHORIZATION_MISMATCH); malformed fields
+    (UNSUPPORTED_SIGNATURE, which includes a TransferWithAuthorization for USDT, USDB or USDG: none of them
+    implements EIP-3009, so it could never settle); a "from" that is not sender (AUTHORIZATION_MISMATCH); malformed fields
     (INVALID_AUTHORIZATION). Time is the server's clock, never an argument.
 
     Circle Gateway batched payments (nanopayments) are supported: the same TransferWithAuthorization signed
@@ -615,11 +655,13 @@ def check_x402_authorization(
         return held
     try:
         gate = _gate()
+        allowed = _allowed_tokens()
     except Exception as e:
         return _config_error(e)
     try:
         v = sdk_check_authorization(typed_data, sender=sender, gate=gate, blocked_addresses=blocked,
                                     peg_deviation_pct=peg_deviation_pct, untrusted_request=untrusted_text,
+                                    allowed_tokens=allowed,
                                     max_validity_seconds=_float_env("SRA_MAX_AUTH_VALIDITY_SECONDS", 3600.0),
                                     max_gateway_validity_seconds=_float_env("SRA_MAX_GATEWAY_VALIDITY_SECONDS",
                                                                             8 * 86400.0))
@@ -650,10 +692,10 @@ def check_circle_wallets_request(
     With Circle Wallets you never sign yourself: Circle signs as soon as it accepts your request. So call
     this with the exact request body BEFORE sending it, and only send it if decision is "approve".
 
-    A transfer of USDC (by tokenAddress, or a Circle tokenId the server has confirmed is USDC), or of native
-    USDC on Arc, gets the same checks as check_payment_rules (OFAC SDN match, blocklist, known payees,
+    A transfer of USDC (by tokenAddress, or a Circle tokenId the server has confirmed is USDC), of native
+    USDC on Arc, or of USDT, USDB or USDG by tokenAddress when the server enables them, gets the same checks as check_payment_rules (OFAC SDN match, blocklist, known payees,
     amount ceiling, depeg, self-asserted claims in untrusted_text). A contractExecution is rebuilt into its
-    calldata and checked like check_transaction: only a USDC transfer() is approved, and approve() is held
+    calldata and checked like check_transaction: only a stablecoin transfer() is approved, and approve() is held
     (TOKEN_APPROVAL, plus UNLIMITED_APPROVAL). signTypedData is checked like check_x402_authorization (x402,
     Circle Gateway, Permit held). signTransaction is checked like check_transaction, including EIP-7702
     delegations. signMessage and wallet upgrades are always held.
@@ -673,6 +715,7 @@ def check_circle_wallets_request(
         gate = _gate()
         wallets = _circle_wallets_env()
         token_ids = _address_list_env("SRA_CIRCLE_USDC_TOKEN_IDS")
+        allowed = _allowed_tokens()
     except Exception as e:
         return _config_error(e)
     try:
@@ -680,7 +723,7 @@ def check_circle_wallets_request(
         v = sdk_check_circle_request(
             operation, body, sender=sender, chain=chain_id, wallets=wallets, usdc_token_ids=token_ids,
             gate=gate, blocked_addresses=blocked, peg_deviation_pct=peg_deviation_pct,
-            untrusted_request=untrusted_text,
+            untrusted_request=untrusted_text, allowed_tokens=allowed,
             max_validity_seconds=_float_env("SRA_MAX_AUTH_VALIDITY_SECONDS", 3600.0),
             max_gateway_validity_seconds=_float_env("SRA_MAX_GATEWAY_VALIDITY_SECONDS", 8 * 86400.0))
         return {**v.model_dump(mode="json"), "source": "rules"}
@@ -704,10 +747,10 @@ def check_user_operation(
     Use this when your wallet is a smart account (Coinbase Smart Wallet, CDP smart account, Safe, Kernel, Nexus,
     SimpleAccount): what you sign is a UserOperation whose callData can bundle several calls, and an unlimited
     approve() can hide next to an ordinary payment. The calls are decoded and each is checked like
-    check_transaction: a USDC transfer() gets the payment rules (OFAC SDN match, blocklist, known payees, amount
+    check_transaction: a stablecoin transfer() gets the payment rules (OFAC SDN match, blocklist, known payees, amount
     ceiling, depeg, self-asserted claims in untrusted_text); approvals, permits, other contracts and native ETH are
     held, naming the call ("call 2 of 3"). Payments to the same payee are summed across the batch (BATCH_TOTAL),
-    so a payment cannot be split under the ceiling.
+    so a payment cannot be split under the ceiling, even across tokens (USDC and USDT, say).
 
     Also held: a call from the account to itself (ACCOUNT_SELF_CALL: it can change owners or modules), a
     delegatecall (DELEGATECALL; a Safe batch through MultiSendCallOnly is decoded), callData it cannot read
@@ -724,6 +767,7 @@ def check_user_operation(
     try:
         gate = _gate()
         paymasters = _address_env("SRA_EXPECTED_PAYMASTERS")
+        allowed = _allowed_tokens()
     except Exception as e:
         return _config_error(e)
     try:
@@ -731,7 +775,8 @@ def check_user_operation(
         allow = os.environ.get("SRA_ALLOW_ACCOUNT_DEPLOYMENT", "").strip().lower() in ("1", "true", "yes")
         v = sdk_check_user_operation(op, chain_id=chain_id, sender=sender, expected_paymasters=paymasters,
                                      allow_account_deployment=allow, gate=gate, blocked_addresses=blocked,
-                                     peg_deviation_pct=peg_deviation_pct, untrusted_request=untrusted_text)
+                                     peg_deviation_pct=peg_deviation_pct, untrusted_request=untrusted_text,
+                                     allowed_tokens=allowed)
         out = {**v.model_dump(mode="json"), "source": "rules"}
         try:
             out["decoded_calls"] = decode_account_calls(op.get("callData", op.get("call_data")))[:20]

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.13.0 — 2026-11-06
+
+- USDT, USDB (Bridge) and USDG in the checks before signing, from sra-riskgate 1.0.0. New server setting
+  `SRA_ALLOWED_TOKENS` (default `USDC`): the stablecoins `check_payment_rules`, `check_transaction`,
+  `check_x402_authorization`, `check_circle_wallets_request` and `check_user_operation` may approve. A token not
+  enabled is held as `UNSUPPORTED_ASSET`; an unknown symbol is a configuration error. Enabling is a server
+  setting only, never a tool argument.
+- `check_payment_rules` takes optional `token` ("USDC", "USDT", "USDB", "USDG"); `amount_usdc` is then in whole
+  tokens of that coin. Robinhood Chain (4663) is accepted for USDG.
+- `check_transaction` reads the token from the contract called; `decoded` now also has `token` and `amount`
+  (`amount_usdc` is kept for USDC).
+- A `TransferWithAuthorization` for USDT, USDB or USDG is held (`UNSUPPORTED_SIGNATURE`): read on chain, none of
+  them implements EIP-3009, so it could never settle. Approvals and permits are held for every token.
+- UserOperations sum payments to one payee across tokens (`BATCH_TOTAL`).
+- `check_x402_payment` and `verify_gateway_balances` stay USDC-only. Requires `sra-riskgate>=1.0.0`.
+
 ## 0.12.0 — 2026-11-06
 
 - `verify_settlement` takes optional `token`, `decimals` and `symbol`: a named stablecoin ("USDT", "USDB", "USDG",
