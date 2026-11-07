@@ -3,7 +3,7 @@
   "name": "io.github.sriram1983007-dev/sra-riskgate-mcp",
   "title": "SRA-RiskGate",
   "description": "Check stablecoin and x402 payments before an AI agent pays: approve, hold or reject.",
-  "version": "0.11.1",
+  "version": "0.12.0",
   "repository": {
     "url": "https://github.com/sriram1983007-dev/sra-riskgate-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "sra-riskgate-mcp",
-      "version": "0.11.1",
+      "version": "0.12.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -150,6 +150,27 @@
           "isSecret": false,
           "name": "SRA_EXPECTED_PAYMASTERS_FILE",
           "description": "File with one expected paymaster address per line."
+        },
+        {
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SRA_EXPECTED_SPENDERS",
+          "description": "Contracts your wallet approved on purpose (comma/space separated). check_allowances holds an allowance to any other spender."
+        },
+        {
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SRA_EXPECTED_SPENDERS_FILE",
+          "description": "File with one expected spender address per line."
+        },
+        {
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SRA_MAX_ALLOWANCE",
+          "description": "The most any one spender may be allowed, in whole tokens. check_allowances holds anything larger."
         },
         {
           "isRequired": false,

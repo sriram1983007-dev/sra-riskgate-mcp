@@ -12,6 +12,7 @@ Tools:
   check_payment_with_model   full review by SRA-RiskGate-4B via a local OpenAI-compatible server
   verify_settlement          after settlement: a mined receipt must hold exactly the approved USDC payment
   verify_gateway_balances    after settlement: a Circle Gateway payment, from balances before and after
+  check_allowances           standing approvals behind pull payments (subscriptions, loan repayments)
 
 Configuration (environment variables):
   SRA_BASE_URL       OpenAI-compatible endpoint for the model (default: Ollama, http://localhost:11434/v1)
@@ -38,6 +39,10 @@ Configuration (environment variables):
                      set, a UserOperation with any other paymaster is held (UNKNOWN_PAYMASTER). Unset: not checked.
   SRA_ALLOW_ACCOUNT_DEPLOYMENT  "1" to allow a UserOperation that also deploys the smart account (initCode or
                      factory). Default: held (ACCOUNT_DEPLOYMENT).
+  SRA_EXPECTED_SPENDERS / SRA_EXPECTED_SPENDERS_FILE  contracts your wallet approved on purpose (a lender, a
+                     subscription). check_allowances holds an allowance to any other spender (UNKNOWN_SPENDER).
+  SRA_MAX_ALLOWANCE  the most any one spender may be allowed, in whole tokens; check_allowances holds anything
+                     larger (ALLOWANCE_ABOVE_LIMIT). Unset: only unlimited allowances are held.
   SRA_CIRCLE_USDC_TOKEN_IDS  Circle token ids you have confirmed are USDC, for transfers that name the token
                      by tokenId (comma- or space-separated). Unset: such transfers are held.
 
@@ -68,7 +73,8 @@ from sra_riskgate import (RulePreFilter, check_account_code as sdk_check_account
                           decode_erc20_transfer, scan_payload_claims,
                           check_x402_timeout as sdk_check_x402_timeout,
                           verify_gateway_balances as sdk_verify_gateway_balances,
-                          verify_settlement as sdk_verify_settlement)
+                          verify_settlement as sdk_verify_settlement,
+                          check_allowances as sdk_check_allowances)
 from sra_riskgate.counterparty import parse_address_list
 from sra_riskgate.payload_claims import FLAG as CLAIMS_FLAG
 from sra_riskgate.chains import (GATEWAY_BATCHED_DOMAIN, NATIVE_USDC_CHAINS, NATIVE_USDC_DECIMALS, USDC_ADDRESSES, USDC_DECIMALS,
@@ -166,6 +172,18 @@ D_NONCE = ("Optional. For an x402 / EIP-3009 payment, the authorization's nonce 
            "AuthorizationUsed event must be in the receipt.")
 D_ALLOW_OTHER = ("Optional, default false. Accept other USDC transfers out of the payer in the same transaction, "
                  "such as a known facilitator fee.")
+D_TOKEN = ('Optional. The token, if not USDC: a named stablecoin listed for that chain ("USDT" on Ethereum; '
+           '"USDB" on Ethereum and Base; "USDG" on Ethereum and Robinhood Chain 4663; "USDC"), whose contract and '
+           'decimals are filled in, or any ERC-20 contract address together with decimals.')
+D_DECIMALS = "Optional. The token's decimals() when token is a contract address that is not a named stablecoin."
+D_SYMBOL = "Optional. A name for the token in the explanation, for a token given by contract address."
+D_TOKEN_AMOUNT = ('The approved amount in whole tokens, for example "0.01" or "25.075" (USDC unless token is set; '
+                  'the name is kept for compatibility).')
+D_OWNER = "The wallet that granted the allowances: your agent's own wallet."
+D_ALLOWANCES = ('Each spender with the raw value the token\'s allowance(owner, spender) returned now, read on '
+                'chain: {"0xspender": "0" | "25075000" | "0xffff...", ...}.')
+D_ALLOWANCE_TOKEN = ('Optional. A named stablecoin ("USDC", "USDT", "USDB", "USDG") with chain_id, so amounts are '
+                     'read in its decimals. Default: 6 decimals, shown as USDC.')
 D_BAL = 'A Gateway balance in USDC exactly as Gateway\'s /balances API returned it, for example "0.080000".'
 D_NOW = "Current Unix time in seconds."
 D_POLICY = ('The receiving policy, for example {"max_amount_usdc": 100, "allowed_assets": ["USDC"], '
@@ -753,9 +771,12 @@ def verify_settlement(
     chain_id: Annotated[int, Field(description=D_CHAIN)],
     payer: Annotated[str, Field(description=D_APPROVED_PAYER)],
     payee: Annotated[str, Field(description=D_APPROVED_PAYEE)],
-    amount_usdc: Annotated[Union[str, float], Field(description=D_APPROVED_AMOUNT)],
+    amount_usdc: Annotated[Union[str, float], Field(description=D_TOKEN_AMOUNT)],
     authorization_nonce: Annotated[Optional[str], Field(description=D_NONCE)] = None,
     allow_other_transfers: Annotated[bool, Field(description=D_ALLOW_OTHER)] = False,
+    token: Annotated[Optional[str], Field(description=D_TOKEN)] = None,
+    decimals: Annotated[Optional[int], Field(description=D_DECIMALS)] = None,
+    symbol: Annotated[Optional[str], Field(description=D_SYMBOL)] = None,
 ) -> dict[str, Any]:
     """AFTER a payment settles, check that exactly what the gate approved actually arrived.
 
@@ -763,7 +784,9 @@ def verify_settlement(
     payer, payee and amount from the decision that said "approve". Verified only if the transaction succeeded
     and holds exactly one USDC Transfer from payer to payee for exactly that amount, plus, with
     authorization_nonce, the AuthorizationUsed event of the approved x402 authorization. Only the payer's own
-    USDC events are read, so facilitator batches and ERC-4337 bundles work too.
+    USDC events are read, so facilitator batches and ERC-4337 bundles work too. For another stablecoin pass token:
+    "USDT", "USDB" or "USDG" (contract and decimals filled in for the chain), or any ERC-20 contract address with
+    its decimals.
 
     Returns verified (true or false), flags, explanation and the payer's USDC transfers. Flags when not
     verified: SETTLEMENT_FAILED (reverted), SETTLEMENT_NOT_FOUND, SETTLEMENT_AMOUNT_MISMATCH,
@@ -777,7 +800,8 @@ def verify_settlement(
     try:
         v = sdk_verify_settlement(rc, chain_id=chain_id, payer=payer, payee=payee, amount=amount_usdc,
                                   authorization_nonce=authorization_nonce,
-                                  allow_other_transfers=bool(allow_other_transfers))
+                                  allow_other_transfers=bool(allow_other_transfers),
+                                  token=token, decimals=decimals, symbol=symbol)
         return {**v.model_dump(mode="json"), "source": "rules"}
     except Exception as e:  # fail closed
         return {"verified": False, "flags": ["INVALID_RECEIPT"],
@@ -808,6 +832,37 @@ def verify_gateway_balances(
     except Exception as e:  # fail closed
         return {"verified": False, "flags": ["CONFIGURATION_ERROR"],
                 "explanation": f"Not verified: the check failed ({type(e).__name__}).", "source": "rules"}
+
+
+@mcp.tool(annotations=CHECK_ONLY)
+def check_allowances(
+    owner: Annotated[str, Field(description=D_OWNER)],
+    allowances: Annotated[dict[str, Union[int, str]], Field(description=D_ALLOWANCES)],
+    token: Annotated[Optional[str], Field(description=D_ALLOWANCE_TOKEN)] = None,
+    chain_id: Annotated[Optional[int], Field(description=D_CHAIN)] = None,
+) -> dict[str, Any]:
+    """Check the approvals your wallet has already granted: the risk in a pull payment lives there.
+
+    A subscription charge or a loan repayment taken by the lender's contract needs no new signature, so nothing
+    is checked when the money moves. What can be taken is the allowance granted earlier. Read each spender's
+    allowance(owner, spender) on chain and pass the raw values. Run this on a schedule and after every approval.
+
+    Returns decision approve, hold or reject. Held: an effectively unlimited allowance (UNLIMITED_ALLOWANCE),
+    one above SRA_MAX_ALLOWANCE (ALLOWANCE_ABOVE_LIMIT), or one to a spender outside SRA_EXPECTED_SPENDERS
+    (UNKNOWN_SPENDER). Rejected: a spender on the OFAC SDN snapshot or SRA_BLOCKED_ADDRESSES: revoke it now.
+    Zero allowances are ignored. The expected spenders and the limit come only from the server's settings,
+    never from tool arguments.
+    """
+    try:
+        max_allowance = os.environ.get("SRA_MAX_ALLOWANCE") or None
+        r = sdk_check_allowances(owner, allowances, token=token, chain_id=chain_id, max_allowance=max_allowance,
+                                 expected_spenders=_address_env("SRA_EXPECTED_SPENDERS"),
+                                 blocked_addresses=_address_env("SRA_BLOCKED_ADDRESSES"))
+        return {**r.model_dump(mode="json"), "source": "rules"}
+    except Exception as e:  # fail closed
+        return {"decision": "hold", "risk_score": 1.0, "flags": ["CHECK_FAILED"],
+                "explanation": f"The allowance check failed ({type(e).__name__}), so it is held.",
+                "required_actions": ["manual_review"], "source": "rules"}
 
 
 def _address_list_env(name: str) -> Optional[list[str]]:

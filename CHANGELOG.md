@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.12.0 — 2026-11-06
+
+- `verify_settlement` takes optional `token`, `decimals` and `symbol`: a named stablecoin ("USDT", "USDB", "USDG",
+  "USDC") with its contract and decimals filled in for the chain, or any ERC-20 contract address with its
+  decimals. Without them it checks USDC as before. Closes Audit #13 Finding 2: USDG, USDT and USDB settlements were
+  verifiable in the Python SDK since 0.19.0 / 0.20.0 but not through MCP.
+- New tool `check_allowances`: standing approvals behind pull payments. Holds unlimited allowances, allowances
+  above `SRA_MAX_ALLOWANCE` and allowances to spenders outside `SRA_EXPECTED_SPENDERS` (+ `_FILE`); rejects
+  sanctioned or blocked spenders. The expected spenders and the limit come only from server settings.
+- `verify_gateway_balances` stays USDC-only: Circle Gateway holds USDC.
+- Requires `sra-riskgate>=0.20.0`. Tool count: 12.
+
 ## 0.11.1 — 2026-11-04
 
 - The source distribution now includes the test data (`tests/data/*.json`), so the published test suite runs
