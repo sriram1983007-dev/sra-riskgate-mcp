@@ -82,3 +82,54 @@ def test_x402_gateway_timeout_passes_only_for_circles_contract():
     assert x402(max_timeout_seconds=604900, extra=good)["decision"] == "approve"
     fake = {**good, "verifyingContract": "0x" + "77" * 20}
     assert x402(max_timeout_seconds=604900, extra=fake)["flags"] == ["UNSUPPORTED_ASSET"]
+
+
+# 0.12.0: other stablecoins (Audit #13 Finding 2) and standing allowances
+USDG_RH = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"
+LENDER = "0x281210097f0de7a8fb6f87310af0f089c9c8de21"
+
+
+def usdg_receipt(units, token=USDG_RH):
+    return {"status": "0x1", "blockNumber": hex(106262957),
+            "logs": [{"address": token, "topics": [TRANSFER_TOPIC, word(AGENT), word(LENDER)],
+                      "data": "0x" + format(units, "064x")}]}
+
+
+def test_usdg_settlement_by_name():
+    r = call("verify_settlement", {"receipt": usdg_receipt(25_075_000), "chain_id": 4663, "payer": AGENT,
+                                   "payee": LENDER, "amount_usdc": "25.075", "token": "USDG"})
+    assert r["verified"] is True and "25.075 USDG" in r["explanation"]
+
+
+def test_token_by_address_with_decimals():
+    other = "0x" + "12" * 20
+    r = call("verify_settlement", {"receipt": usdg_receipt(10 * 10**18, token=other), "chain_id": 4663,
+                                   "payer": AGENT, "payee": LENDER, "amount_usdc": "10", "token": other,
+                                   "decimals": 18, "symbol": "TKN"})
+    assert r["verified"] is True and "exactly 10 TKN" in r["explanation"]
+
+
+def test_named_token_on_unlisted_chain_is_refused():
+    r = call("verify_settlement", {"receipt": usdg_receipt(25_075_000), "chain_id": 8453, "payer": AGENT,
+                                   "payee": LENDER, "amount_usdc": "25.075", "token": "USDT"})
+    assert r["verified"] is False and r["flags"] == ["CONFIGURATION_ERROR"]
+
+
+def test_check_allowances_tool(monkeypatch):
+    monkeypatch.setenv("SRA_EXPECTED_SPENDERS", LENDER)
+    monkeypatch.setenv("SRA_MAX_ALLOWANCE", "50")
+    ok = call("check_allowances", {"owner": AGENT, "allowances": {LENDER: "0"}, "token": "USDG", "chain_id": 4663})
+    assert ok["decision"] == "approve"
+    big = call("check_allowances", {"owner": AGENT, "allowances": {LENDER: str(2**256 - 1)}})
+    assert big["decision"] == "hold" and big["flags"] == ["UNLIMITED_ALLOWANCE"]
+    stranger = call("check_allowances", {"owner": AGENT, "allowances": {"0x" + "77" * 20: "5000000"}})
+    assert stranger["flags"] == ["UNKNOWN_SPENDER"]
+    over = call("check_allowances", {"owner": AGENT, "allowances": {LENDER: "60000000"}})
+    assert over["flags"] == ["ALLOWANCE_ABOVE_LIMIT"]
+
+
+def test_check_allowances_blocked_spender(monkeypatch):
+    bad = "0x" + "66" * 20
+    monkeypatch.setenv("SRA_BLOCKED_ADDRESSES", bad)
+    r = call("check_allowances", {"owner": AGENT, "allowances": {bad: "1"}})
+    assert r["decision"] == "reject" and r["flags"] == ["BLOCKLISTED_SPENDER"]
