@@ -6,12 +6,13 @@
 [![M8ven Verified](https://m8ven.ai/badge/mcp/sriram1983007-dev-sra-riskgate-mcp-1vnq1q?v=2728cabf723fc8d83e26ea48cd6c398e&variant=verified)](https://m8ven.ai/mcp/sriram1983007-dev-sra-riskgate-mcp-1vnq1q?s=readme)
 
 An [MCP](https://modelcontextprotocol.io) server that lets AI assistants and agents check a stablecoin
-payment **before** paying it: `approve`, `hold` or `reject`.
+payment **before** paying it: `approve`, `hold` or `reject`. USDC by default; from 0.13.0 also USDT, USDB (Bridge)
+and USDG once the server enables them with `SRA_ALLOWED_TOKENS`.
 
 | Tool | What it does | Needs |
 |---|---|---|
 | `check_address_sanctions` | Exact, offline match of up to 100 addresses against OFAC's published SDN crypto addresses (bundled, dated snapshot) | Nothing |
-| `check_payment_rules` | Instant rule checks: OFAC SDN address match, address validity, self-transfers, amount ceiling, USDC depeg in both directions, and self-asserted claims in the payment's text | Nothing |
+| `check_payment_rules` | Instant rule checks: OFAC SDN address match, address validity, self-transfers, amount ceiling, depeg in both directions, and self-asserted claims in the payment's text; `token` for USDT, USDB or USDG | Nothing |
 | `check_x402_payment` | The same checks for an x402 payment requirement, before the agent signs; from 0.11.0, a server asking for a signature valid longer than an hour (`max_timeout_seconds`) is held, except Circle Gateway requirements for Circle's real GatewayWallet | Nothing |
 | `check_transaction` | The same checks for the exact transaction the agent is about to sign (`to`, calldata, `value`); token approvals, other functions, other contracts and native ETH are held | Nothing |
 | `check_x402_authorization` | The same checks for the x402 signature itself (the EIP-3009 `TransferWithAuthorization` typed data) before signing; expired, post-dated or long-lived authorizations, permits and non-USDC domains are held | Nothing |
@@ -118,8 +119,9 @@ ollama pull sriram1983007/sra-riskgate
 | `SRA_MODEL` | `sriram1983007/sra-riskgate` | Model name on that endpoint |
 | `SRA_API_KEY` | `none` | API key, if the endpoint needs one |
 | `SRA_TIMEOUT` | `120` | Seconds to wait for the model |
-| `SRA_MAX_AMOUNT` | `1000` | Rule ceiling in USDC; larger payments are held |
-| `SRA_DEPEG_HOLD_PCT` / `SRA_DEPEG_REJECT_PCT` | `1` / `5` | USDC depeg thresholds in percent |
+| `SRA_MAX_AMOUNT` | `1000` | Rule ceiling in whole tokens of the stablecoin paid; larger payments are held |
+| `SRA_ALLOWED_TOKENS` | `USDC` | Stablecoins the payment checks may approve: any of `USDC`, `USDT`, `USDB`, `USDG`, comma- or space-separated. Any other token is held (`UNSUPPORTED_ASSET`); an unknown symbol is a configuration error |
+| `SRA_DEPEG_HOLD_PCT` / `SRA_DEPEG_REJECT_PCT` | `1` / `5` | Depeg thresholds in percent, for the stablecoin paid |
 | `SRA_KNOWN_RECIPIENTS` | unset (check off) | Verified payees, comma- or space-separated. Payments to anyone else are held (`NEW_COUNTERPARTY`). Set but empty: every payment is held |
 | `SRA_KNOWN_RECIPIENTS_FILE` | unset | A file with one verified payee per line (`#` comments allowed), added to the list above |
 | `SRA_BLOCKED_ADDRESSES` / `SRA_BLOCKED_ADDRESSES_FILE` | unset | Addresses to always reject, same formats |
@@ -175,11 +177,27 @@ benchmark this check flags all 4 of the model's unsafe approvals with 0 false ho
 payments; it was written after those failures were known, so treat it as a fix for a known weakness,
 not as proof of general robustness.
 
+## Other stablecoins (0.13.0+)
+
+Set `SRA_ALLOWED_TOKENS=USDC,USDT,USDB,USDG` (or any subset) and the payment tools check those tokens too:
+
+| Token | Chains | Transfers, transactions, Circle Wallets, UserOperations | x402 signature (EIP-3009) | Permit / approve |
+|---|---|---|---|---|
+| USDC | Ethereum, Base, Base Sepolia, Arc, Arc Testnet | checked | checked | held |
+| USDT | Ethereum | checked | held: USDT does not implement EIP-3009 | approve held |
+| USDB (Bridge) | Ethereum, Base | checked | held: not implemented | held |
+| USDG | Ethereum, Robinhood Chain (4663) | checked | held: not implemented | held |
+
+`check_transaction` reads the token from the contract called, not from anything the request says, and its
+`decoded` result names it (`token`, `amount`). Pass the paid token's own peg as `peg_deviation_pct`. In a
+UserOperation, payments to one payee are summed across tokens, so a payment split between USDC and USDT is checked
+as one. Enabling a token is a server setting, never a tool argument, so a manipulated agent cannot turn it on.
+
 ## Limitations
 
 These tools give risk signals, not legal or compliance advice. The OFAC match is an exact comparison with a
 dated snapshot, not a sanctions screening service. The tools do not verify signatures or read chain state: the verify tools check the receipt or balances you pass in. Only USDC on Ethereum, Base, Base Sepolia, Arc and Arc Testnet is
-checked by the x402 tool.
+checked by the x402 tool: none of the other listed tokens implements EIP-3009, which x402 signs.
 
 ## Related
 

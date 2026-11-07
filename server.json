@@ -3,7 +3,7 @@
   "name": "io.github.sriram1983007-dev/sra-riskgate-mcp",
   "title": "SRA-RiskGate",
   "description": "Check stablecoin and x402 payments before an AI agent pays: approve, hold or reject.",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "repository": {
     "url": "https://github.com/sriram1983007-dev/sra-riskgate-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "sra-riskgate-mcp",
-      "version": "0.12.0",
+      "version": "0.13.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -34,7 +34,14 @@
         },
         {
           "name": "SRA_MAX_AMOUNT",
-          "description": "Rule ceiling in USDC; larger payments are held (default: 1000)",
+          "description": "Rule ceiling in whole tokens of the stablecoin paid; larger payments are held (default: 1000)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_ALLOWED_TOKENS",
+          "description": "Stablecoins the payment checks may approve: USDC, USDT, USDB, USDG (comma-separated). Default: USDC only",
           "isRequired": false,
           "format": "string",
           "isSecret": false

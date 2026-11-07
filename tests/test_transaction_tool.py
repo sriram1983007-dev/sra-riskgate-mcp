@@ -33,7 +33,7 @@ def tx(**kw):
 def test_plain_transfer_is_approved_and_decoded():
     out = tx()
     assert out["decision"] == "approve" and out["source"] == "rules"
-    assert out["decoded"] == {"recipient": YOU, "amount_usdc": "20"}
+    assert out["decoded"] == {"recipient": YOU, "token": "USDC", "amount": "20", "amount_usdc": "20"}
 
 
 def test_transfer_gets_the_payment_rules(monkeypatch):
@@ -107,7 +107,7 @@ ARC_USDC = USDC_ADDRESSES[5042]
 def test_arc_native_send_is_checked_and_decoded():
     out = tx(chain_id=5042, to=YOU, data="0x", value=str(20 * 10**18))
     assert out["decision"] == "approve"
-    assert out["decoded"] == {"recipient": YOU, "amount_usdc": "20"}
+    assert out["decoded"] == {"recipient": YOU, "token": "USDC", "amount": "20", "amount_usdc": "20"}
     out = tx(chain_id=5042002, to=YOU, data="0x", value=hex(5 * 10**17))
     assert out["decision"] == "approve" and out["decoded"]["amount_usdc"] == "0.5"
 
@@ -118,7 +118,7 @@ def test_arc_native_send_gets_the_payment_rules(monkeypatch):
 
 
 def test_arc_erc20_transfer_and_native_with_call():
-    assert tx(chain_id=5042, to=ARC_USDC)["decoded"] == {"recipient": YOU, "amount_usdc": "20"}
+    assert tx(chain_id=5042, to=ARC_USDC)["decoded"] == {"recipient": YOU, "token": "USDC", "amount": "20", "amount_usdc": "20"}
     out = tx(chain_id=5042, to=ARC_USDC, value=10**18)
     assert out["decision"] == "hold" and out["flags"] == ["NATIVE_VALUE_TRANSFER"] and "decoded" in out
 
