@@ -22,6 +22,10 @@ Configuration (environment variables):
   SRA_MAX_AMOUNT     rule ceiling in whole tokens of the stablecoin paid (default: 1000)
   SRA_ALLOWED_TOKENS stablecoins the payment checks may approve: USDC, USDT, USDB, USDG (comma- or space-
                      separated). Default: USDC only; any other token is held (UNSUPPORTED_ASSET).
+  SRA_EXTRA_TOKENS / SRA_EXTRA_TOKENS_FILE  US-dollar stablecoins the SDK does not list, as JSON: a list of
+                     {"symbol", "chain_id", "contract", "decimals", "eip3009" (optional, default false)}, inline or
+                     in a file. Every tool then recognises them; enable payments with SRA_ALLOWED_TOKENS. An entry
+                     that is malformed or would change a built-in token is a configuration error.
   SRA_DEPEG_HOLD_PCT / SRA_DEPEG_REJECT_PCT   depeg thresholds in percent (defaults: 1 and 5)
   SRA_KNOWN_RECIPIENTS / SRA_KNOWN_RECIPIENTS_FILE   payees you have verified; a payment to anyone
                      else is held (NEW_COUNTERPARTY). Unset: check off. Comma- or space-separated
@@ -81,7 +85,7 @@ from sra_riskgate.counterparty import parse_address_list
 from sra_riskgate.payload_claims import FLAG as CLAIMS_FLAG
 from sra_riskgate.chains import (GATEWAY_BATCHED_DOMAIN, NATIVE_USDC_CHAINS, NATIVE_USDC_DECIMALS, STABLECOINS,
                                   USDC_ADDRESSES, USDC_DECIMALS, chain_id_from_network, is_usdc,
-                                  parse_allowed_tokens, stablecoin_at)
+                                  parse_allowed_tokens, register_stablecoin, stablecoin_at)
 
 from mcp.types import ToolAnnotations
 
@@ -265,8 +269,41 @@ def _gate() -> RulePreFilter:
     )
 
 
+_EXTRA_KEYS = {"symbol", "chain_id", "contract", "decimals", "eip3009"}
+
+
+def _extra_tokens() -> None:
+    """Register SRA_EXTRA_TOKENS and SRA_EXTRA_TOKENS_FILE with the SDK (idempotent).
+
+    Raises on unreadable or malformed JSON, an unknown key, or a registration the SDK refuses (a change to a
+    built-in token, or the same symbol with different details), so the calling tool fails closed.
+    """
+    texts = [os.environ.get("SRA_EXTRA_TOKENS")]
+    path = os.environ.get("SRA_EXTRA_TOKENS_FILE")
+    if path:
+        with open(path, encoding="utf-8") as f:
+            texts.append(f.read())
+    for text in texts:
+        if not text or not text.strip():
+            continue
+        data = json.loads(text)
+        entries = [data] if isinstance(data, dict) else data
+        if not isinstance(entries, list):
+            raise ValueError("SRA_EXTRA_TOKENS must be a JSON object or a list of objects")
+        for e in entries:
+            if not isinstance(e, dict) or not {"symbol", "chain_id", "contract", "decimals"} <= set(e) <= _EXTRA_KEYS:
+                raise ValueError("each SRA_EXTRA_TOKENS entry needs symbol, chain_id, contract and decimals "
+                                 "(and optionally eip3009), nothing else")
+            register_stablecoin(e["symbol"], e["chain_id"], e["contract"], e["decimals"],
+                                eip3009=e.get("eip3009", False))
+
+
 def _allowed_tokens() -> frozenset[str]:
-    """SRA_ALLOWED_TOKENS as a set of symbols; USDC alone when unset. Raises on an unknown symbol."""
+    """SRA_ALLOWED_TOKENS as a set of symbols; USDC alone when unset. Raises on an unknown symbol.
+
+    Registers SRA_EXTRA_TOKENS first, so their symbols can be enabled.
+    """
+    _extra_tokens()
     raw = os.environ.get("SRA_ALLOWED_TOKENS")
     return parse_allowed_tokens(raw if raw and raw.strip() else None)
 
@@ -831,7 +868,7 @@ def verify_settlement(
     authorization_nonce, the AuthorizationUsed event of the approved x402 authorization. Only the payer's own
     USDC events are read, so facilitator batches and ERC-4337 bundles work too. For another stablecoin pass token:
     "USDT", "USDB" or "USDG" (contract and decimals filled in for the chain), or any ERC-20 contract address with
-    its decimals.
+    its decimals, or a token the server registered in SRA_EXTRA_TOKENS by its symbol.
 
     Returns verified (true or false), flags, explanation and the payer's USDC transfers. Flags when not
     verified: SETTLEMENT_FAILED (reverted), SETTLEMENT_NOT_FOUND, SETTLEMENT_AMOUNT_MISMATCH,
@@ -842,6 +879,12 @@ def verify_settlement(
         rc = json.loads(receipt) if isinstance(receipt, str) else receipt
     except ValueError:
         rc = None
+    try:
+        _extra_tokens()
+    except Exception as e:
+        return {"verified": False, "flags": ["CONFIGURATION_ERROR"],
+                "explanation": f"Not verified: SRA_EXTRA_TOKENS is invalid ({type(e).__name__}: {e})"[:300],
+                "source": "rules"}
     try:
         v = sdk_verify_settlement(rc, chain_id=chain_id, payer=payer, payee=payee, amount=amount_usdc,
                                   authorization_nonce=authorization_nonce,
@@ -899,6 +942,7 @@ def check_allowances(
     never from tool arguments.
     """
     try:
+        _extra_tokens()
         max_allowance = os.environ.get("SRA_MAX_ALLOWANCE") or None
         r = sdk_check_allowances(owner, allowances, token=token, chain_id=chain_id, max_allowance=max_allowance,
                                  expected_spenders=_address_env("SRA_EXPECTED_SPENDERS"),
