@@ -120,6 +120,7 @@ ollama pull sriram1983007/sra-riskgate
 | `SRA_API_KEY` | `none` | API key, if the endpoint needs one |
 | `SRA_TIMEOUT` | `120` | Seconds to wait for the model |
 | `SRA_MAX_AMOUNT` | `1000` | Rule ceiling in whole tokens of the stablecoin paid; larger payments are held |
+| `SRA_EXTRA_TOKENS` / `SRA_EXTRA_TOKENS_FILE` | unset | US-dollar stablecoins the SDK does not list, as JSON (inline or in a file): a list of `{"symbol", "chain_id", "contract", "decimals", "eip3009"}`. Every tool then recognises them; enable payments with `SRA_ALLOWED_TOKENS`. A malformed entry, or one that would change a built-in token, is a configuration error |
 | `SRA_ALLOWED_TOKENS` | `USDC` | Stablecoins the payment checks may approve: any of `USDC`, `USDT`, `USDB`, `USDG`, comma- or space-separated. Any other token is held (`UNSUPPORTED_ASSET`); an unknown symbol is a configuration error |
 | `SRA_DEPEG_HOLD_PCT` / `SRA_DEPEG_REJECT_PCT` | `1` / `5` | Depeg thresholds in percent, for the stablecoin paid |
 | `SRA_KNOWN_RECIPIENTS` | unset (check off) | Verified payees, comma- or space-separated. Payments to anyone else are held (`NEW_COUNTERPARTY`). Set but empty: every payment is held |
@@ -192,6 +193,22 @@ Set `SRA_ALLOWED_TOKENS=USDC,USDT,USDB,USDG` (or any subset) and the payment too
 `decoded` result names it (`token`, `amount`). Pass the paid token's own peg as `peg_deviation_pct`. In a
 UserOperation, payments to one payee are summed across tokens, so a payment split between USDC and USDT is checked
 as one. Enabling a token is a server setting, never a tool argument, so a manipulated agent cannot turn it on.
+
+### Your own stablecoin or chain (0.14.0+)
+
+For a token or chain not in the table (a testnet dollar, PYUSD, an L2's own stablecoin), describe it in the
+server's settings:
+
+```json
+"env": {
+  "SRA_EXTRA_TOKENS": "[{\"symbol\": \"TUSD8\", \"chain_id\": 1234, \"contract\": \"0x…\", \"decimals\": 6}]",
+  "SRA_ALLOWED_TOKENS": "USDC,TUSD8"
+}
+```
+
+Read the contract address and `decimals()` from the chain yourself. Set `"eip3009": true` only if the contract
+implements `transferWithAuthorization`; otherwise an x402 signature for it is held. A registration can never
+change USDC, USDT, USDB or USDG, and like the other settings it cannot be set from a tool argument.
 
 ## Limitations
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.0 — 2026-11-10
+
+- New settings `SRA_EXTRA_TOKENS` and `SRA_EXTRA_TOKENS_FILE`: US-dollar stablecoins the SDK does not list,
+  as JSON (`symbol`, `chain_id`, `contract`, `decimals`, optional `eip3009`). Registered with sra-riskgate
+  1.1.0's `register_stablecoin()`, so every tool recognises them: the payment checks (once enabled with
+  `SRA_ALLOWED_TOKENS`), `verify_settlement(token=...)` and `check_allowances(token=...)`.
+- Fails closed: malformed JSON, an unknown key, an unreadable file, or an entry that would change a built-in
+  token is a configuration error in every tool that reads it.
+- Requires `sra-riskgate>=1.1.0`.
+
 ## 0.13.0 — 2026-11-06
 
 - USDT, USDB (Bridge) and USDG in the checks before signing, from sra-riskgate 1.0.0. New server setting

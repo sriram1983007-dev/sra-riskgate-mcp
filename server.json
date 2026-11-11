@@ -3,7 +3,7 @@
   "name": "io.github.sriram1983007-dev/sra-riskgate-mcp",
   "title": "SRA-RiskGate",
   "description": "Check stablecoin and x402 payments before an AI agent pays: approve, hold or reject.",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "repository": {
     "url": "https://github.com/sriram1983007-dev/sra-riskgate-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "sra-riskgate-mcp",
-      "version": "0.13.0",
+      "version": "0.14.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -42,6 +42,20 @@
         {
           "name": "SRA_ALLOWED_TOKENS",
           "description": "Stablecoins the payment checks may approve: USDC, USDT, USDB, USDG (comma-separated). Default: USDC only",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_EXTRA_TOKENS",
+          "description": "US-dollar stablecoins the SDK does not list, as JSON: [{\"symbol\", \"chain_id\", \"contract\", \"decimals\", \"eip3009\"}]. Enable payments in them with SRA_ALLOWED_TOKENS",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_EXTRA_TOKENS_FILE",
+          "description": "Path to a JSON file in the SRA_EXTRA_TOKENS format",
           "isRequired": false,
           "format": "string",
           "isSecret": false
