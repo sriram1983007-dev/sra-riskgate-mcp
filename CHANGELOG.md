@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.15.0 — 2026-11-11
+
+- New tool `check_dispute_verdict` (13 tools): checks a dispute verdict against the dispute window, recomputed
+  from `paid_at`, `filed_at` and the policy's `dispute_window_days` (sra-riskgate's `check_dispute_verdict`).
+  A deny or dismiss that rests on a false `outside_dispute_window` claim becomes `escalate_to_human` with no
+  refund; it never turns a verdict into a refund. Accepts the SDK's dispute format or the model prompt's
+  `context`/`case` blocks, and the verdict as JSON or as the model's raw reply. Fails closed to
+  `escalate_to_human`.
+- Why now: on the published benchmark, false window claims cause 59 of the full model's 61 wrongful denials, and
+  the Q4_K_M build (measured 2026-11-11) makes them about twice as often (wrongful denials 55.3%). With this
+  check, wrongful denials are 0.85% on the full model, Q8_0 and Q4_K_M alike, with no added wrongful refunds.
+
 ## 0.14.0 — 2026-11-10
 
 - New settings `SRA_EXTRA_TOKENS` and `SRA_EXTRA_TOKENS_FILE`: US-dollar stablecoins the SDK does not list,

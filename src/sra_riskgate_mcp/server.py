@@ -13,6 +13,7 @@ Tools:
   verify_settlement          after settlement: a mined receipt must hold exactly the approved USDC payment
   verify_gateway_balances    after settlement: a Circle Gateway payment, from balances before and after
   check_allowances           standing approvals behind pull payments (subscriptions, loan repayments)
+  check_dispute_verdict      a dispute verdict against the dispute window; false window claims are escalated
 
 Configuration (environment variables):
   SRA_BASE_URL       OpenAI-compatible endpoint for the model (default: Ollama, http://localhost:11434/v1)
@@ -71,7 +72,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as MCPServer
 
-from sra_riskgate import (RulePreFilter, check_account_code as sdk_check_account_code, SanctionsList, TransactionPayload, check_transaction as sdk_check_transaction,
+from sra_riskgate import (check_dispute_verdict as sdk_check_dispute_verdict, RulePreFilter, check_account_code as sdk_check_account_code, SanctionsList, TransactionPayload, check_transaction as sdk_check_transaction,
                           check_delegation as sdk_check_delegation,
                           check_authorization as sdk_check_authorization,
                           check_circle_request as sdk_check_circle_request,
@@ -192,6 +193,11 @@ D_SYMBOL = "Optional. A name for the token in the explanation, for a token given
 D_TOKEN_AMOUNT = ('The approved amount in whole tokens, for example "0.01" or "25.075" (USDC unless token is set; '
                   'the name is kept for compatibility).')
 D_OWNER = "The wallet that granted the allowances: your agent's own wallet."
+D_DISPUTE = ("The dispute the verdict is about, as JSON: {\"policy\": {\"dispute_window_days\": 30, ...}, "
+             "\"payload\": {\"payment\": {\"paid_at\": <unix seconds>, ...}, \"claim\": {\"filed_at\": <unix seconds>, ...}}}. "
+             "The model's own prompt blocks also work: {\"context\": {\"policy\": ...}, \"case\": {...}}.")
+D_VERDICT = ("The dispute verdict to check: the JSON object (outcome, mechanism, flags, explanation, ...) or the model's "
+             "raw reply as text.")
 D_ALLOWANCES = ('Each spender with the raw value the token\'s allowance(owner, spender) returned now, read on '
                 'chain: {"0xspender": "0" | "25075000" | "0xffff...", ...}.')
 D_ALLOWANCE_TOKEN = ('Optional. A named stablecoin ("USDC", "USDT", "USDB", "USDG") with chain_id, so amounts are '
@@ -951,6 +957,77 @@ def check_allowances(
     except Exception as e:  # fail closed
         return {"decision": "hold", "risk_score": 1.0, "flags": ["CHECK_FAILED"],
                 "explanation": f"The allowance check failed ({type(e).__name__}), so it is held.",
+                "required_actions": ["manual_review"], "source": "rules"}
+
+
+def _first_json_object(text: str) -> Optional[dict[str, Any]]:
+    """The first JSON object in a model reply (code fences and surrounding text allowed), or None."""
+    text = re.sub(r"```(?:json)?", "", text)
+    dec = json.JSONDecoder()
+    for m in re.finditer(r"\{", text):
+        try:
+            obj, _ = dec.raw_decode(text, m.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
+def _dispute_input(dispute: Any) -> Any:
+    """Accept the SDK's format ({policy, payload}) or the model prompt's blocks ({context: {policy}, case})."""
+    if isinstance(dispute, str):
+        dispute = json.loads(dispute)
+    if not isinstance(dispute, dict):
+        return dispute
+    out = dict(dispute)
+    if "policy" not in out and isinstance(out.get("context"), dict):
+        out["policy"] = out["context"].get("policy")
+    if "payload" not in out and isinstance(out.get("case"), dict):
+        out["payload"] = out["case"]
+    return out
+
+
+@mcp.tool(annotations=CHECK_ONLY)
+def check_dispute_verdict(
+    dispute: Annotated[Union[dict[str, Any], str], Field(description=D_DISPUTE)],
+    verdict: Annotated[Union[dict[str, Any], str], Field(description=D_VERDICT)],
+) -> dict[str, Any]:
+    """Check a dispute verdict against the dispute window before acting on it.
+
+    Use after check_payment_with_model (or any model or person) decides a stablecoin dispute. Whether a dispute
+    was filed inside the policy's window is date arithmetic, and models get it wrong: on the published benchmark
+    SRA-RiskGate-4B's false "outside the window" claims cause 59 of its 61 wrongful denials, and the 2.5 GB Q4_K_M
+    build makes the mistake about twice as often. This tool recomputes the window from paid_at, filed_at and the
+    policy's dispute_window_days.
+
+    If the verdict says outside_dispute_window but the dates put the dispute inside the window, the false flag is
+    replaced by dispute_window_claim_contradicted, and a deny or dismiss becomes escalate_to_human with no refund:
+    the reason given for refusing the claim is wrong, so a person decides. It never turns a verdict into a refund.
+    If the window cannot be computed, the verdict is returned unchanged with dispute_window_not_checked. The result
+    carries dispute_window (days since payment, window, within) for your records. On the benchmark this lowers
+    wrongful denials from 26.0% to 0.85% (and from 55.3% to 0.85% on Q4_K_M) without adding a wrongful refund.
+
+    Unlike the payment tools it does not return approve, hold or reject: it returns the dispute verdict, checked.
+    """
+    try:
+        v = verdict
+        if isinstance(v, str):
+            v = _first_json_object(v)
+        if not isinstance(v, dict):
+            return {"outcome": "escalate_to_human", "mechanism": "none", "refund_amount_usdc": "0",
+                    "refund_destination": None, "idempotency_key": None, "flags": ["verdict_unreadable"],
+                    "explanation": "The verdict is not a JSON object, so it cannot be checked and is escalated.",
+                    "required_actions": ["manual_review"], "source": "rules"}
+        try:
+            d = _dispute_input(dispute)
+        except ValueError:
+            d = None
+        return {**sdk_check_dispute_verdict(d if isinstance(d, dict) else {}, v), "source": "rules"}
+    except Exception as e:  # fail closed: escalate, never refund
+        return {"outcome": "escalate_to_human", "mechanism": "none", "refund_amount_usdc": "0",
+                "refund_destination": None, "idempotency_key": None, "flags": ["check_failed"],
+                "explanation": f"The dispute check failed ({type(e).__name__}), so the dispute is escalated.",
                 "required_actions": ["manual_review"], "source": "rules"}
 
 
