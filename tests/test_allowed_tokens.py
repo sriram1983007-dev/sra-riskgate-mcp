@@ -116,13 +116,17 @@ def test_approval_held_for_every_token(enabled):
 
 
 # ------------------------------------------------------------------ check_x402_authorization
-def test_eip3009_for_usdg_is_held(enabled):
+def test_eip3009_for_usdg_is_checked(enabled):
+    # sra-riskgate 1.6.0+: USDG implements EIP-3009 (re-read on chain 2026-11-14), so it is checked, not held.
+    import time
     td = {"primaryType": "TransferWithAuthorization",
           "domain": {"name": "Global Dollar", "version": "1", "chainId": 4663, "verifyingContract": USDG_RH},
           "message": {"from": ME, "to": YOU, "value": "1000000", "validAfter": "0",
-                      "validBefore": str(NOW_FAR), "nonce": "0x" + "ab" * 32}}
+                      "validBefore": str(int(time.time()) + 600), "nonce": "0x" + "ab" * 32}}
     out = call("check_x402_authorization", dict(typed_data=td, sender=ME))
-    assert out["decision"] == "hold" and "UNSUPPORTED_SIGNATURE" in out["flags"]
+    assert "UNSUPPORTED_SIGNATURE" not in out["flags"] and out["decision"] == "approve", out
+    td["message"]["validBefore"] = str(NOW_FAR)   # every other check still applies
+    assert call("check_x402_authorization", dict(typed_data=td, sender=ME))["decision"] == "hold"
 
 
 # ------------------------------------------------------------------ check_circle_wallets_request

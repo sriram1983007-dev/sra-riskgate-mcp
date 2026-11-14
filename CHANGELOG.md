@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.15.1 — 2026-11-14
+
+- Requires sra-riskgate 1.6.1. USDG implements EIP-3009 on Ethereum and Robinhood Chain (re-read on chain
+  2026-11-14), so `check_authorization` now checks USDG x402 signatures once `SRA_ALLOWED_TOKENS` includes USDG,
+  instead of holding them. The README's token table said they could never settle; that was wrong and is fixed.
+  Reported by an external audit.
+
 ## 0.15.0 — 2026-11-11
 
 - New tool `check_dispute_verdict` (13 tools): checks a dispute verdict against the dispute window, recomputed

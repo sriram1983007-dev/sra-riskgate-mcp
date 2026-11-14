@@ -188,7 +188,7 @@ Set `SRA_ALLOWED_TOKENS=USDC,USDT,USDB,USDG` (or any subset) and the payment too
 | USDC | Ethereum, Base, Base Sepolia, Arc, Arc Testnet | checked | checked | held |
 | USDT | Ethereum | checked | held: USDT does not implement EIP-3009 | approve held |
 | USDB (Bridge) | Ethereum, Base | checked | held: not implemented | held |
-| USDG | Ethereum, Robinhood Chain (4663) | checked | held: not implemented | held |
+| USDG | Ethereum, Robinhood Chain (4663) | checked | checked (sra-riskgate 1.6.0+) | held |
 
 `check_transaction` reads the token from the contract called, not from anything the request says, and its
 `decoded` result names it (`token`, `amount`). Pass the paid token's own peg as `peg_deviation_pct`. In a
