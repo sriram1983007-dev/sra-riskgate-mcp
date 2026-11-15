@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.16.0 — 2026-11-15
+
+- Screening providers from environment variables: `SRA_CHAINALYSIS_API_KEY`, `SRA_TRM_API_KEY` (or
+  `SRA_TRM_KEYLESS=1`), `SRA_RANGE_API_KEY`, `SRA_WEBACY_API_KEY` and `SRA_ELLIPTIC_API_KEY` with
+  `SRA_ELLIPTIC_API_SECRET`. With any of them set, the six payment tools screen the sender and every payee after
+  the local checks pass, through sra-riskgate 1.7.0's `check_payment(screening_providers=...)`: a sanctions match
+  or severe risk rejects, high risk holds, a provider with no usable answer holds.
+- Thresholds: `SRA_SCREENING_HOLD_AT`, `SRA_SCREENING_REJECT_AT`, `SRA_SCREENING_TIMEOUT`,
+  `SRA_WEBACY_HIGH_RISK_SCORE`, `SRA_ELLIPTIC_HIGH_RISK_SCORE`, `SRA_ELLIPTIC_SEVERE_RISK_SCORE`,
+  `SRA_ELLIPTIC_UNSEEN_IS_CLEAN`.
+- Fails closed: a half-configured provider or a malformed threshold is a configuration error (`reject`), never
+  screening silently switched off. Each provider is asked about each address once per tool call.
+- The six payment tools declare `openWorldHint: true` when a screening provider is configured.
+- Requires sra-riskgate 1.7.0.
+
 ## 0.15.1 — 2026-11-14
 
 - Requires sra-riskgate 1.6.1. USDG implements EIP-3009 on Ethereum and Robinhood Chain (re-read on chain

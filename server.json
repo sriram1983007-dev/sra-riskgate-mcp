@@ -3,7 +3,7 @@
   "name": "io.github.sriram1983007-dev/sra-riskgate-mcp",
   "title": "SRA-RiskGate",
   "description": "Check stablecoin and x402 payments before an AI agent pays: approve, hold or reject.",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "repository": {
     "url": "https://github.com/sriram1983007-dev/sra-riskgate-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "sra-riskgate-mcp",
-      "version": "0.15.1",
+      "version": "0.16.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -199,6 +199,104 @@
           "isSecret": false,
           "name": "SRA_ALLOW_ACCOUNT_DEPLOYMENT",
           "description": "Set to 1 to allow a UserOperation that also deploys the smart account (initCode/factory). Default: held."
+        },
+        {
+          "name": "SRA_CHAINALYSIS_API_KEY",
+          "description": "Chainalysis sanctions API key: screen sender and payee with Chainalysis",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "SRA_TRM_API_KEY",
+          "description": "TRM Labs sanctions API key: screen sender and payee with TRM",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "SRA_TRM_KEYLESS",
+          "description": "Set to 1 to screen with TRM's free keyless access (no key)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_RANGE_API_KEY",
+          "description": "Range Risk API key: screen sender and payee with Range",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "SRA_WEBACY_API_KEY",
+          "description": "Webacy API key: screen sender and payee with Webacy",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "SRA_WEBACY_HIGH_RISK_SCORE",
+          "description": "Webacy overallRisk that counts as high risk (default: 100)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_ELLIPTIC_API_KEY",
+          "description": "Elliptic API key: screen sender and payee with Elliptic (needs SRA_ELLIPTIC_API_SECRET)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "SRA_ELLIPTIC_API_SECRET",
+          "description": "Elliptic API secret (Base64), used to sign Elliptic requests",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "SRA_ELLIPTIC_HIGH_RISK_SCORE",
+          "description": "Elliptic risk_score (0-10) that counts as high risk and holds (default: 5)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_ELLIPTIC_SEVERE_RISK_SCORE",
+          "description": "Elliptic risk_score (0-10) that counts as severe and rejects (default: 10)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_ELLIPTIC_UNSEEN_IS_CLEAN",
+          "description": "Set to 1 to pass addresses Elliptic has never seen on chain (default: held)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_SCREENING_HOLD_AT",
+          "description": "Provider risk level that holds a payment: none, low, medium, high, severe (default: high)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_SCREENING_REJECT_AT",
+          "description": "Provider risk level that rejects a payment (default: severe)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_SCREENING_TIMEOUT",
+          "description": "Seconds per screening provider call (default: 10)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
         }
       ]
     }

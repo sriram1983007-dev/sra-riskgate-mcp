@@ -53,6 +53,19 @@ Configuration (environment variables):
   SRA_CIRCLE_USDC_TOKEN_IDS  Circle token ids you have confirmed are USDC, for transfers that name the token
                      by tokenId (comma- or space-separated). Unset: such transfers are held.
 
+Screening providers (0.16.0+, all optional; any one set turns screening on for the six payment tools):
+  SRA_CHAINALYSIS_API_KEY   Chainalysis's free sanctions API
+  SRA_TRM_API_KEY           TRM Labs' free sanctions API; or SRA_TRM_KEYLESS=1 for TRM's keyless access
+  SRA_RANGE_API_KEY         Range Risk API v2
+  SRA_WEBACY_API_KEY        Webacy address risk (SRA_WEBACY_HIGH_RISK_SCORE, default 100)
+  SRA_ELLIPTIC_API_KEY + SRA_ELLIPTIC_API_SECRET   Elliptic Lens wallet screening (SRA_ELLIPTIC_HIGH_RISK_SCORE,
+                     default 5; SRA_ELLIPTIC_SEVERE_RISK_SCORE, default 10; SRA_ELLIPTIC_UNSEEN_IS_CLEAN=1 to pass
+                     addresses Elliptic has never seen, which are otherwise held)
+  SRA_SCREENING_HOLD_AT / SRA_SCREENING_REJECT_AT  risk levels that hold / reject (defaults: high / severe)
+  SRA_SCREENING_TIMEOUT     seconds per provider call (default: 10)
+  The sender and the payee are screened only after the local checks pass. A sanctions match rejects; a provider
+  that errors, times out or answers in an unexpected shape holds the payment (SCREENING_UNAVAILABLE).
+
 Known payees come only from this configuration, never from tool arguments: an agent whose
 input has been tampered with must not be able to declare an attacker's address "known".
 """
@@ -83,6 +96,8 @@ from sra_riskgate import (check_dispute_verdict as sdk_check_dispute_verdict, Ru
                           verify_settlement as sdk_verify_settlement,
                           check_allowances as sdk_check_allowances)
 from sra_riskgate.counterparty import parse_address_list
+from sra_riskgate.screening import (RISK_ORDER, ChainalysisSanctions, EllipticRisk, RangeRisk, TRMSanctions,
+                                    WebacyRisk, screen_addresses, screening_decision)
 from sra_riskgate.payload_claims import FLAG as CLAIMS_FLAG
 from sra_riskgate.chains import (GATEWAY_BATCHED_DOMAIN, NATIVE_USDC_CHAINS, NATIVE_USDC_DECIMALS, STABLECOINS,
                                   USDC_ADDRESSES, USDC_DECIMALS, chain_id_from_network, is_usdc,
@@ -314,6 +329,113 @@ def _allowed_tokens() -> frozenset[str]:
     return parse_allowed_tokens(raw if raw and raw.strip() else None)
 
 
+_SCREENING_ENV = ("SRA_CHAINALYSIS_API_KEY", "SRA_TRM_API_KEY", "SRA_TRM_KEYLESS", "SRA_RANGE_API_KEY",
+                  "SRA_WEBACY_API_KEY", "SRA_ELLIPTIC_API_KEY", "SRA_ELLIPTIC_API_SECRET")
+
+
+def _env_set(name: str) -> bool:
+    v = os.environ.get(name)
+    return v is not None and v.strip() != ""
+
+
+def _flag_env(name: str) -> bool:
+    """A yes/no setting. Unset or empty is no; anything other than 1/true/yes/0/false/no is a configuration error."""
+    v = (os.environ.get(name) or "").strip().lower()
+    if v in ("", "0", "false", "no"):
+        return False
+    if v in ("1", "true", "yes"):
+        return True
+    raise ValueError(f"{name} must be 1 or 0")
+
+
+def _number_env(name: str, default: float) -> float:
+    """A number setting; unlike _float_env, a value that is not a number is a configuration error, not the default."""
+    v = os.environ.get(name)
+    if v is None or not v.strip():
+        return default
+    try:
+        f = float(v)
+    except ValueError:
+        raise ValueError(f"{name} must be a number") from None
+    if not math.isfinite(f):
+        raise ValueError(f"{name} must be a number")
+    return f
+
+
+class _OncePerCall:
+    """Wraps a provider so one tool call asks it about each address at most once (a UserOperation can pay the
+    same payee in several calls, and its batch total is checked again)."""
+
+    def __init__(self, provider: Any):
+        self.provider, self.name, self._seen = provider, provider.name, {}
+
+    def screen(self, address: str, chain_id: int):
+        key = (str(address).lower(), chain_id)
+        if key not in self._seen:
+            self._seen[key] = self.provider.screen(address, chain_id)
+        return self._seen[key]
+
+
+def _screening() -> dict[str, Any]:
+    """check_payment keyword arguments for the configured screening providers; {} when none is configured.
+
+    Raises on a half-configured or malformed provider (an Elliptic key without its secret, a bad threshold), so
+    the calling tool fails closed with a configuration error rather than skipping screening.
+    """
+    timeout = _number_env("SRA_SCREENING_TIMEOUT", 10.0)
+    if timeout <= 0:
+        raise ValueError("SRA_SCREENING_TIMEOUT must be positive")
+    providers: list[Any] = []
+    if _env_set("SRA_CHAINALYSIS_API_KEY"):
+        providers.append(ChainalysisSanctions(os.environ["SRA_CHAINALYSIS_API_KEY"], timeout=timeout))
+    if _env_set("SRA_TRM_API_KEY"):
+        providers.append(TRMSanctions(os.environ["SRA_TRM_API_KEY"], timeout=timeout))
+    elif _flag_env("SRA_TRM_KEYLESS"):
+        providers.append(TRMSanctions(timeout=timeout))
+    if _env_set("SRA_RANGE_API_KEY"):
+        providers.append(RangeRisk(os.environ["SRA_RANGE_API_KEY"], timeout=timeout))
+    if _env_set("SRA_WEBACY_API_KEY"):
+        providers.append(WebacyRisk(os.environ["SRA_WEBACY_API_KEY"], timeout=timeout,
+                                    high_risk_score=_number_env("SRA_WEBACY_HIGH_RISK_SCORE", 100.0)))
+    key, secret = _env_set("SRA_ELLIPTIC_API_KEY"), _env_set("SRA_ELLIPTIC_API_SECRET")
+    if key != secret:
+        raise ValueError("Elliptic needs both SRA_ELLIPTIC_API_KEY and SRA_ELLIPTIC_API_SECRET")
+    if key:
+        providers.append(EllipticRisk(os.environ["SRA_ELLIPTIC_API_KEY"], os.environ["SRA_ELLIPTIC_API_SECRET"],
+                                      timeout=timeout,
+                                      high_risk_score=_number_env("SRA_ELLIPTIC_HIGH_RISK_SCORE", 5.0),
+                                      severe_risk_score=_number_env("SRA_ELLIPTIC_SEVERE_RISK_SCORE", 10.0),
+                                      unseen_is_clean=_flag_env("SRA_ELLIPTIC_UNSEEN_IS_CLEAN")))
+    hold_at = (os.environ.get("SRA_SCREENING_HOLD_AT") or "high").strip().lower()
+    reject_at = (os.environ.get("SRA_SCREENING_REJECT_AT") or "severe").strip().lower()
+    screening_decision([], hold_at=hold_at, reject_at=reject_at)  # validates the two levels
+    if not providers:
+        return {}
+    return {"screening_providers": [_OncePerCall(p) for p in providers],
+            "screening_hold_at": hold_at, "screening_reject_at": reject_at}
+
+
+def _with_screening(verdict: dict[str, Any], screening: dict[str, Any], chain_id: Any,
+                    sender: Any, recipient: Any) -> dict[str, Any]:
+    """Screen sender and recipient for a verdict the local checks did not reject (the SDK's own policy)."""
+    if not screening or verdict.get("decision") == "reject":
+        return verdict
+    results = screen_addresses(screening["screening_providers"], [sender, recipient], chain_id)
+    screened = screening_decision(results, hold_at=screening["screening_hold_at"],
+                                  reject_at=screening["screening_reject_at"])
+    if screened is None:
+        return verdict
+    kind, flags, why = screened
+    if kind == "reject":
+        return {"decision": "reject", "risk_score": 1.0, "flags": flags, "explanation": why[:500],
+                "required_actions": ["block_payment"], "source": "rules"}
+    if verdict.get("decision") == "hold":
+        why += " Also: " + str(verdict.get("explanation", ""))
+        flags = flags + [f for f in verdict.get("flags", []) if f not in flags]
+    return {**verdict, "decision": "hold", "risk_score": max(verdict.get("risk_score", 0), 0.65), "flags": flags,
+            "explanation": why[:500], "required_actions": ["manual_review"]}
+
+
 def _config_error(e: Exception) -> dict[str, Any]:
     return {
         "decision": "reject", "risk_score": 1.0, "flags": ["configuration_error"],
@@ -387,6 +509,9 @@ MAX_ADDRESSES = 100
 # Every tool only returns a decision: none sends, signs or changes anything, and repeating a call has
 # no further effect. Only the model tool reaches outside the server (the model endpoint).
 CHECK_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+# With a screening provider configured, the six payment tools call it: they are then open-world too.
+SCREENED = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True,
+                           openWorldHint=any(_env_set(n) for n in _SCREENING_ENV))
 CHECK_WITH_MODEL = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True,
                                    openWorldHint=True)
 
@@ -437,7 +562,7 @@ def check_address_sanctions(
                 "required_actions": ["do_not_pay", "retry_or_refer_to_compliance"]}
 
 
-@mcp.tool(annotations=CHECK_ONLY)
+@mcp.tool(annotations=SCREENED)
 def check_payment_rules(
     chain_id: Annotated[int, Field(description=D_CHAIN)],
     sender: Annotated[str, Field(description=D_SENDER)],
@@ -486,6 +611,7 @@ def check_payment_rules(
         return screened
     try:
         allowed = _allowed_tokens()
+        screening = _screening()
     except Exception as e:
         return _config_error(e)
     sym = token.strip().upper() if isinstance(token, str) and token.strip() else "USDC"
@@ -505,11 +631,11 @@ def check_payment_rules(
                                               f"Sepolia, Arc and Arc Testnet are checked for USDC.")
         chains = ", ".join(str(c) for c in sorted(STABLECOINS[sym]))
         return _hold("unsupported_chain", f"Chain {chain_id} is not checked for {sym}; supported: {chains}.")
-    return _with_claims(_rules_verdict(chain_id, sender, recipient, amount_usdc, peg_deviation_pct, blocked, sym),
-                        untrusted_text)
+    verdict = _rules_verdict(chain_id, sender, recipient, amount_usdc, peg_deviation_pct, blocked, sym)
+    return _with_claims(_with_screening(verdict, screening, chain_id, sender, recipient), untrusted_text)
 
 
-@mcp.tool(annotations=CHECK_ONLY)
+@mcp.tool(annotations=SCREENED)
 def check_x402_payment(
     network: Annotated[str, Field(description=D_NETWORK)],
     asset: Annotated[str, Field(description=D_ASSET)],
@@ -548,6 +674,7 @@ def check_x402_payment(
         return held
     try:
         screened = _screen_addresses(_gate(), payer, pay_to, blocked)
+        screening = _screening()
     except Exception as e:
         return _config_error(e)
     if screened:
@@ -576,12 +703,13 @@ def check_x402_payment(
             "explanation": f"Payment amount {amount!r} is not a positive number of atomic units.",
             "required_actions": ["reject_payment"], "source": "rules",
         }
-    verdict = _rules_verdict(chain_id, payer, pay_to, float(usdc), peg_deviation_pct, blocked)
+    verdict = _with_screening(_rules_verdict(chain_id, payer, pay_to, float(usdc), peg_deviation_pct, blocked),
+                              screening, chain_id, payer, pay_to)
     verdict["amount_usdc"] = str(usdc)
     return _with_claims(verdict, untrusted_text)
 
 
-@mcp.tool(annotations=CHECK_ONLY)
+@mcp.tool(annotations=SCREENED)
 def check_transaction(
     chain_id: Annotated[int, Field(description=D_CHAIN)],
     sender: Annotated[str, Field(description=D_SENDER)],
@@ -626,6 +754,7 @@ def check_transaction(
     try:
         gate = _gate()
         allowed = _allowed_tokens()
+        screening = _screening()
     except Exception as e:
         return _config_error(e)
     try:
@@ -636,7 +765,7 @@ def check_transaction(
             tx["authorizationList"] = authorization_list
         v = sdk_check_transaction(tx, chain_id=chain_id, sender=sender,
                                   gate=gate, blocked_addresses=blocked, peg_deviation_pct=peg_deviation_pct,
-                                  untrusted_request=untrusted_text, allowed_tokens=allowed)
+                                  untrusted_request=untrusted_text, allowed_tokens=allowed, **screening)
         out = {**v.model_dump(mode="json"), "source": "rules"}
         decoded = decode_erc20_transfer(data)
         listed = stablecoin_at(chain_id, to)
@@ -656,7 +785,7 @@ def check_transaction(
                 "required_actions": ["manual_review"], "source": "rules"}
 
 
-@mcp.tool(annotations=CHECK_ONLY)
+@mcp.tool(annotations=SCREENED)
 def check_x402_authorization(
     typed_data: Annotated[Union[dict, str], Field(description=D_TYPED_DATA)],
     sender: Annotated[str, Field(description=D_SENDER)],
@@ -699,12 +828,13 @@ def check_x402_authorization(
     try:
         gate = _gate()
         allowed = _allowed_tokens()
+        screening = _screening()
     except Exception as e:
         return _config_error(e)
     try:
         v = sdk_check_authorization(typed_data, sender=sender, gate=gate, blocked_addresses=blocked,
                                     peg_deviation_pct=peg_deviation_pct, untrusted_request=untrusted_text,
-                                    allowed_tokens=allowed,
+                                    allowed_tokens=allowed, **screening,
                                     max_validity_seconds=_float_env("SRA_MAX_AUTH_VALIDITY_SECONDS", 3600.0),
                                     max_gateway_validity_seconds=_float_env("SRA_MAX_GATEWAY_VALIDITY_SECONDS",
                                                                             8 * 86400.0))
@@ -719,7 +849,7 @@ def check_x402_authorization(
                 "required_actions": ["manual_review"], "source": "rules"}
 
 
-@mcp.tool(annotations=CHECK_ONLY)
+@mcp.tool(annotations=SCREENED)
 def check_circle_wallets_request(
     operation: Annotated[str, Field(description=D_CIRCLE_OP)],
     request: Annotated[Union[dict, str], Field(description=D_CIRCLE_REQUEST)],
@@ -759,6 +889,7 @@ def check_circle_wallets_request(
         wallets = _circle_wallets_env()
         token_ids = _address_list_env("SRA_CIRCLE_USDC_TOKEN_IDS")
         allowed = _allowed_tokens()
+        screening = _screening()
     except Exception as e:
         return _config_error(e)
     try:
@@ -766,7 +897,7 @@ def check_circle_wallets_request(
         v = sdk_check_circle_request(
             operation, body, sender=sender, chain=chain_id, wallets=wallets, usdc_token_ids=token_ids,
             gate=gate, blocked_addresses=blocked, peg_deviation_pct=peg_deviation_pct,
-            untrusted_request=untrusted_text, allowed_tokens=allowed,
+            untrusted_request=untrusted_text, allowed_tokens=allowed, **screening,
             max_validity_seconds=_float_env("SRA_MAX_AUTH_VALIDITY_SECONDS", 3600.0),
             max_gateway_validity_seconds=_float_env("SRA_MAX_GATEWAY_VALIDITY_SECONDS", 8 * 86400.0))
         return {**v.model_dump(mode="json"), "source": "rules"}
@@ -776,7 +907,7 @@ def check_circle_wallets_request(
                 "required_actions": ["manual_review"], "source": "rules"}
 
 
-@mcp.tool(annotations=CHECK_ONLY)
+@mcp.tool(annotations=SCREENED)
 def check_user_operation(
     user_operation: Annotated[Union[dict, str], Field(description=D_USER_OP)],
     chain_id: Annotated[int, Field(description=D_USER_OP_CHAIN)],
@@ -811,6 +942,7 @@ def check_user_operation(
         gate = _gate()
         paymasters = _address_env("SRA_EXPECTED_PAYMASTERS")
         allowed = _allowed_tokens()
+        screening = _screening()
     except Exception as e:
         return _config_error(e)
     try:
@@ -819,7 +951,7 @@ def check_user_operation(
         v = sdk_check_user_operation(op, chain_id=chain_id, sender=sender, expected_paymasters=paymasters,
                                      allow_account_deployment=allow, gate=gate, blocked_addresses=blocked,
                                      peg_deviation_pct=peg_deviation_pct, untrusted_request=untrusted_text,
-                                     allowed_tokens=allowed)
+                                     allowed_tokens=allowed, **screening)
         out = {**v.model_dump(mode="json"), "source": "rules"}
         try:
             out["decoded_calls"] = decode_account_calls(op.get("callData", op.get("call_data")))[:20]

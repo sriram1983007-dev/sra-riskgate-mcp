@@ -134,6 +134,15 @@ ollama pull sriram1983007/sra-riskgate
 | `SRA_ALLOW_ACCOUNT_DEPLOYMENT` | unset | `1` to allow a UserOperation that also deploys the smart account (otherwise held) |
 | `SRA_CIRCLE_WALLETS` | unset | Circle wallets the agent may use, as `walletId=0xaddress` pairs; any other wallet id is held |
 | `SRA_CIRCLE_USDC_TOKEN_IDS` | unset | Circle token ids you have confirmed are USDC, for transfers by `tokenId` (otherwise held) |
+| `SRA_CHAINALYSIS_API_KEY` | unset | Screen sender and payee with Chainalysis's free sanctions API (0.16.0+) |
+| `SRA_TRM_API_KEY` / `SRA_TRM_KEYLESS` | unset | Screen with TRM Labs' free sanctions API, with a key or (`SRA_TRM_KEYLESS=1`) without one |
+| `SRA_RANGE_API_KEY` | unset | Screen with Range Risk API v2 |
+| `SRA_WEBACY_API_KEY` / `SRA_WEBACY_HIGH_RISK_SCORE` | unset / `100` | Screen with Webacy; an `overallRisk` at or above the score counts as high risk |
+| `SRA_ELLIPTIC_API_KEY` + `SRA_ELLIPTIC_API_SECRET` | unset | Screen with Elliptic Lens wallet screening. Both are needed; one without the other is a configuration error |
+| `SRA_ELLIPTIC_HIGH_RISK_SCORE` / `SRA_ELLIPTIC_SEVERE_RISK_SCORE` | `5` / `10` | Elliptic `risk_score` (0 to 10) that counts as high / severe; match them to your Elliptic risk rules |
+| `SRA_ELLIPTIC_UNSEEN_IS_CLEAN` | unset | `1` to pass an address Elliptic has never seen on chain (otherwise held: think of new payees) |
+| `SRA_SCREENING_HOLD_AT` / `SRA_SCREENING_REJECT_AT` | `high` / `severe` | Provider risk levels (`none`, `low`, `medium`, `high`, `severe`) that hold and reject |
+| `SRA_SCREENING_TIMEOUT` | `10` | Seconds per provider call |
 
 A malformed address or an unreadable file in any of these gives `reject` with `configuration_error`, so a
 typo can never silently weaken a check. Example:
@@ -147,11 +156,39 @@ typo can never silently weaken a check. Example:
 
 Set them in the `env` block of your MCP client configuration.
 
+### Screening providers (0.16.0+)
+
+Set any provider's key and the six payment tools (`check_payment_rules`, `check_x402_payment`,
+`check_transaction`, `check_x402_authorization`, `check_circle_wallets_request`, `check_user_operation`) also
+screen the sender and every payee with it, after the local checks pass. This is sra-riskgate 1.7.0's
+`check_payment(screening_providers=...)`:
+
+| Any provider reports | Decision | Flag |
+| --- | --- | --- |
+| A sanctions match | `reject` | `PROVIDER_SANCTIONS_MATCH` |
+| Risk at or above `SRA_SCREENING_REJECT_AT` | `reject` | `PROVIDER_RISK_SEVERE` |
+| Risk at or above `SRA_SCREENING_HOLD_AT` | `hold` | `PROVIDER_RISK_HIGH` |
+| An error, a timeout or an unexpected answer | `hold`, never a pass | `SCREENING_UNAVAILABLE` |
+
+```json
+"env": {
+  "SRA_CHAINALYSIS_API_KEY": "<your key>",
+  "SRA_ELLIPTIC_API_KEY": "<your key>",
+  "SRA_ELLIPTIC_API_SECRET": "<your secret>"
+}
+```
+
+Only the two addresses are sent to each provider, and each provider is asked about each address once per tool
+call. A provider set up wrongly (an Elliptic key without its secret, a threshold that is not a number) makes
+every payment tool return `reject` with `configuration_error`, so a typo never turns screening off. With no
+provider set, nothing leaves your machine, as before.
+
 ## Tool annotations
 
 Every tool declares MCP tool annotations, so clients know none of them sends, signs or changes anything:
 `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`. `openWorldHint` is `true` only for
-`check_payment_with_model`, which calls your model endpoint; the other four run entirely offline.
+`check_payment_with_model`, which calls your model endpoint, and, when a screening provider is configured, for
+the six payment tools, which then call it. Everything else runs entirely offline.
 
 ## How agents should use it
 

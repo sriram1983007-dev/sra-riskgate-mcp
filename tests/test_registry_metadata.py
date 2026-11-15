@@ -43,4 +43,5 @@ def test_every_setting_the_server_reads_is_declared():
     declared = {e["name"] for e in server["packages"][0]["environmentVariables"]}
     assert used - declared == set()
     secret = {e["name"] for e in server["packages"][0]["environmentVariables"] if e["isSecret"]}
-    assert secret == {"SRA_API_KEY"}
+    assert secret == {"SRA_API_KEY", "SRA_CHAINALYSIS_API_KEY", "SRA_TRM_API_KEY", "SRA_RANGE_API_KEY",
+                      "SRA_WEBACY_API_KEY", "SRA_ELLIPTIC_API_KEY", "SRA_ELLIPTIC_API_SECRET"}
