@@ -71,6 +71,9 @@ input has been tampered with must not be able to declare an attacker's address "
 """
 from __future__ import annotations
 
+import base64
+import functools
+import inspect
 import json
 import math
 import os
@@ -96,6 +99,8 @@ from sra_riskgate import (check_dispute_verdict as sdk_check_dispute_verdict, Ru
                           verify_settlement as sdk_verify_settlement,
                           check_allowances as sdk_check_allowances)
 from sra_riskgate.counterparty import parse_address_list
+from sra_riskgate import (ReceiptSigner, SpendGuard, SpendLedger, issue_receipt, load_policy,
+                          verify_receipt as sdk_verify_receipt)
 from sra_riskgate.screening import (RISK_ORDER, ChainalysisSanctions, EllipticRisk, RangeRisk, TRMSanctions,
                                     WebacyRisk, screen_addresses, screening_decision)
 from sra_riskgate.payload_claims import FLAG as CLAIMS_FLAG
@@ -226,7 +231,98 @@ D_TOOL_RESULTS = ("Outputs of your own verification tools: decoded payment, sign
                   "and sanctions screening. The model reasons over these; it does not run them.")
 
 
+def _receipt_signer() -> Optional[ReceiptSigner]:
+    """HMAC signer from SRA_RECEIPT_KEY (hex, or base64; at least 16 bytes), or None. Raises on a bad key."""
+    raw = os.environ.get("SRA_RECEIPT_KEY")
+    if raw is None or not raw.strip():
+        return None
+    raw = raw.strip()
+    try:
+        key = bytes.fromhex(raw[2:] if raw.lower().startswith("0x") else raw)
+    except ValueError:
+        try:
+            key = base64.b64decode(raw, validate=True)
+        except (ValueError, base64.binascii.Error):
+            raise ValueError("SRA_RECEIPT_KEY must be hex or base64") from None
+    if len(key) < 16:
+        raise ValueError("SRA_RECEIPT_KEY must be at least 16 bytes")
+    return ReceiptSigner.hmac(key, key_id=os.environ.get("SRA_RECEIPT_KEY_ID") or "sra-riskgate-mcp")
+
+
+def _receipted(fn):
+    """Attach a signed receipt to the tool's verdict when SRA_RECEIPT_KEY is set (0.17.0+).
+
+    The receipt covers the verdict, the tool name, every argument it was called with and the policy's hash. If a
+    receipt cannot be made, an approval becomes a hold: a decision that should be on record never goes out without one.
+    """
+    sig = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        verdict = fn(*args, **kwargs)
+        try:
+            signer = _receipt_signer()
+        except Exception as e:
+            return _config_error(e)
+        if signer is None or not isinstance(verdict, dict) or "decision" not in verdict:
+            return verdict
+        try:
+            bound = sig.bind(*args, **kwargs)
+            inputs = json.loads(json.dumps(dict(bound.arguments), default=str))
+            pol = _policy()
+            receipt = issue_receipt(verdict, signer, payment={"tool": fn.__name__, "input": inputs}, policy=pol)
+            return {**verdict, "receipt": receipt}
+        except Exception as e:
+            if verdict.get("decision") == "reject":
+                return {**verdict, "flags": list(verdict.get("flags", [])) + ["receipt_failed"]}
+            return {**verdict, "decision": "hold", "risk_score": max(verdict.get("risk_score", 0), 0.65),
+                    "flags": ["receipt_failed"] + list(verdict.get("flags", [])),
+                    "explanation": f"No receipt could be signed ({type(e).__name__}), so the payment is held.",
+                    "required_actions": ["manual_review"]}
+    return wrapper
+
+
+class _PolicyConflict(Exception):
+    """A setting given both in SRA_POLICY_FILE and as its own environment variable (never silently resolved)."""
+
+
+# Settings a policy file can give instead of their environment variables (0.17.0+).
+_POLICY_KEY = {"SRA_MAX_AMOUNT": "max_amount", "SRA_DEPEG_HOLD_PCT": "depeg_hold_pct",
+               "SRA_DEPEG_REJECT_PCT": "depeg_reject_pct", "SRA_KNOWN_RECIPIENTS": "known_recipients",
+               "SRA_BLOCKED_ADDRESSES": "blocked_addresses", "SRA_EXPECTED_DELEGATES": "expected_delegates",
+               "SRA_ALLOWED_TOKENS": "allowed_tokens"}
+_POLICY_CACHE: dict = {}
+
+
+def _policy():
+    """The SDK Policy from SRA_POLICY_FILE, or None. Reloaded when the file changes; raises on a bad file."""
+    path = os.environ.get("SRA_POLICY_FILE")
+    if path is None or not path.strip():
+        return None
+    path = os.path.expanduser(path.strip())
+    st = os.stat(path)
+    key = (path, st.st_mtime_ns, st.st_size)
+    if _POLICY_CACHE.get("key") != key:
+        _POLICY_CACHE.clear()
+        _POLICY_CACHE.update(key=key, policy=load_policy(path))
+    return _POLICY_CACHE["policy"]
+
+
+def _from_policy(name: str) -> tuple[bool, Any]:
+    """(True, value) when SRA_POLICY_FILE sets this setting. Raises if its environment variable is set too."""
+    pol = _policy()
+    k = _POLICY_KEY.get(name)
+    if pol is None or k is None or k not in pol.as_dict():
+        return False, None
+    if os.environ.get(name) is not None or os.environ.get(name + "_FILE") is not None:
+        raise _PolicyConflict(f"{name} is set and SRA_POLICY_FILE sets {k} too; keep one of them")
+    return True, pol.as_dict()[k]
+
+
 def _float_env(name: str, default: float) -> float:
+    found, v = _from_policy(name)
+    if found:
+        return float(v)
     try:
         v = float(os.environ.get(name, default))
         return v if math.isfinite(v) else default
@@ -239,6 +335,9 @@ def _address_env(name: str) -> Optional[list[str]]:
 
     Raises on an unreadable file. Entries are validated by the SDK, so a typo is a configuration error.
     """
+    found, v = _from_policy(name)
+    if found:
+        return list(v)
     inline, path = os.environ.get(name), os.environ.get(name + "_FILE")
     if inline is None and path is None:
         return None
@@ -325,6 +424,9 @@ def _allowed_tokens() -> frozenset[str]:
     Registers SRA_EXTRA_TOKENS first, so their symbols can be enabled.
     """
     _extra_tokens()
+    found, v = _from_policy("SRA_ALLOWED_TOKENS")
+    if found:
+        return parse_allowed_tokens(v)
     raw = os.environ.get("SRA_ALLOWED_TOKENS")
     return parse_allowed_tokens(raw if raw and raw.strip() else None)
 
@@ -382,6 +484,19 @@ def _screening() -> dict[str, Any]:
     Raises on a half-configured or malformed provider (an Elliptic key without its secret, a bad threshold), so
     the calling tool fails closed with a configuration error rather than skipping screening.
     """
+    pol = _policy()
+    if pol is not None and "screening" in pol.as_dict():
+        clash = [n for n in _SCREENING_ENV + ("SRA_SCREENING_HOLD_AT", "SRA_SCREENING_REJECT_AT") if _env_set(n)]
+        if clash:
+            raise _PolicyConflict(f"SRA_POLICY_FILE sets screening and {clash[0]} is set too; keep one of them")
+        kw = pol.check_kwargs()
+        out = {"screening_providers": [_OncePerCall(p) for p in kw["screening_providers"]],
+               "screening_hold_at": kw["screening_hold_at"], "screening_reject_at": kw["screening_reject_at"]}
+        return _with_guard(out)
+    return _with_guard(_screening_from_env())
+
+
+def _screening_from_env() -> dict[str, Any]:
     timeout = _number_env("SRA_SCREENING_TIMEOUT", 10.0)
     if timeout <= 0:
         raise ValueError("SRA_SCREENING_TIMEOUT must be positive")
@@ -415,10 +530,76 @@ def _screening() -> dict[str, Any]:
             "screening_hold_at": hold_at, "screening_reject_at": reject_at}
 
 
+_BUDGET_ENV = ("SRA_BUDGET_TOTAL", "SRA_BUDGET_PER_PAYEE", "SRA_MAX_PAYMENTS_PER_HOUR", "SRA_AMOUNT_SPIKE_FACTOR")
+_GUARDS: dict = {}
+
+
+def _spend_guard() -> Optional[SpendGuard]:
+    """The SpendGuard from SRA_POLICY_FILE (budgets/anomalies) or the SRA_BUDGET_* variables, or None.
+
+    One guard per configuration for the life of the server, so its ledger (SRA_LEDGER_FILE, or memory) is shared
+    by every tool call. Raises on a bad or conflicting setting.
+    """
+    env_set = [n for n in _BUDGET_ENV + ("SRA_LEDGER_FILE", "SRA_BUDGET_WINDOW_HOURS") if _env_set(n)]
+    pol = _policy()
+    if pol is not None and pol.spend_guard is not None:
+        if env_set:
+            raise _PolicyConflict(f"SRA_POLICY_FILE sets budgets and {env_set[0]} is set too; keep one of them")
+        return pol.spend_guard
+    if not any(_env_set(n) for n in _BUDGET_ENV):
+        if env_set:
+            raise ValueError(f"{env_set[0]} is set but no budget is: set SRA_BUDGET_TOTAL, SRA_BUDGET_PER_PAYEE, "
+                             f"SRA_MAX_PAYMENTS_PER_HOUR or SRA_AMOUNT_SPIKE_FACTOR")
+        return None
+
+    def opt(n, integer=False):
+        if not _env_set(n):
+            return None
+        v = _number_env(n, 0.0)
+        return int(v) if integer and v == int(v) else v
+    cfg = (os.environ.get("SRA_LEDGER_FILE") or None, opt("SRA_BUDGET_TOTAL"), opt("SRA_BUDGET_PER_PAYEE"),
+           _number_env("SRA_BUDGET_WINDOW_HOURS", 24.0), opt("SRA_MAX_PAYMENTS_PER_HOUR", True),
+           opt("SRA_AMOUNT_SPIKE_FACTOR"))
+    if cfg not in _GUARDS:
+        ledger, total, per_payee, hours, rate, spike = cfg
+        _GUARDS[cfg] = SpendGuard(SpendLedger(ledger), total_limit=total, per_payee_limit=per_payee,
+                                  window_seconds=hours * 3600, max_payments_per_hour=rate, amount_spike_factor=spike)
+    return _GUARDS[cfg]
+
+
+def _with_guard(kw: dict[str, Any]) -> dict[str, Any]:
+    g = _spend_guard()
+    return {**kw, "spend_guard": g} if g is not None else kw
+
+
+def _with_budget(verdict: dict[str, Any], guard: Optional[SpendGuard], chain_id: Any, sender: Any,
+                 recipient: Any, amount: Any, token: str = "USDC") -> dict[str, Any]:
+    """Budgets and anomalies for the tools that do not go through the SDK's check_payment (same rules)."""
+    if guard is None or verdict.get("decision") == "reject":
+        return verdict
+    try:
+        broken = guard.evaluate(sender=str(sender), recipient=str(recipient), amount=float(amount))
+        if broken:
+            why = " ".join(w for _, w in broken)
+            if verdict.get("decision") == "hold":
+                why += " Also: " + str(verdict.get("explanation", ""))
+            flags = [f for f, _ in broken] + [f for f in verdict.get("flags", []) if f not in {f for f, _ in broken}]
+            return {**verdict, "decision": "hold", "risk_score": max(verdict.get("risk_score", 0), 0.65),
+                    "flags": flags, "explanation": why[:500], "required_actions": ["manual_review"]}
+        if verdict.get("decision") == "approve" and guard.reserve_on_approve:
+            guard.record(chain_id=chain_id, sender=str(sender), recipient=str(recipient), amount=float(amount),
+                         token=token)
+        return verdict
+    except Exception as e:  # an unreadable ledger never approves
+        return {**verdict, "decision": "hold", "risk_score": 0.65, "flags": ["check_failed"],
+                "explanation": f"The spending budget could not be checked ({type(e).__name__}), so the payment "
+                               f"is held.", "required_actions": ["manual_review"]}
+
+
 def _with_screening(verdict: dict[str, Any], screening: dict[str, Any], chain_id: Any,
                     sender: Any, recipient: Any) -> dict[str, Any]:
     """Screen sender and recipient for a verdict the local checks did not reject (the SDK's own policy)."""
-    if not screening or verdict.get("decision") == "reject":
+    if not screening.get("screening_providers") or verdict.get("decision") == "reject":
         return verdict
     results = screen_addresses(screening["screening_providers"], [sender, recipient], chain_id)
     screened = screening_decision(results, hold_at=screening["screening_hold_at"],
@@ -510,8 +691,22 @@ MAX_ADDRESSES = 100
 # no further effect. Only the model tool reaches outside the server (the model endpoint).
 CHECK_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 # With a screening provider configured, the six payment tools call it: they are then open-world too.
-SCREENED = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True,
-                           openWorldHint=any(_env_set(n) for n in _SCREENING_ENV))
+
+
+def _startup_policy_dict() -> dict:
+    try:
+        pol = _policy()
+        return pol.as_dict() if pol is not None else {}
+    except Exception:  # a bad policy file is reported by every tool call, not at import
+        return {}
+
+
+_P0 = _startup_policy_dict()
+# With budgets configured (0.17.0+), the payment tools record approved payments in the local ledger, so repeating a
+# call is not free of effects. With a screening provider configured, they also call it.
+_RECORDS = any(_env_set(n) for n in _BUDGET_ENV) or "budgets" in _P0 or "anomalies" in _P0
+SCREENED = ToolAnnotations(readOnlyHint=not _RECORDS, destructiveHint=False, idempotentHint=not _RECORDS,
+                           openWorldHint=any(_env_set(n) for n in _SCREENING_ENV) or "screening" in _P0)
 CHECK_WITH_MODEL = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True,
                                    openWorldHint=True)
 
@@ -563,6 +758,7 @@ def check_address_sanctions(
 
 
 @mcp.tool(annotations=SCREENED)
+@_receipted
 def check_payment_rules(
     chain_id: Annotated[int, Field(description=D_CHAIN)],
     sender: Annotated[str, Field(description=D_SENDER)],
@@ -632,10 +828,12 @@ def check_payment_rules(
         chains = ", ".join(str(c) for c in sorted(STABLECOINS[sym]))
         return _hold("unsupported_chain", f"Chain {chain_id} is not checked for {sym}; supported: {chains}.")
     verdict = _rules_verdict(chain_id, sender, recipient, amount_usdc, peg_deviation_pct, blocked, sym)
-    return _with_claims(_with_screening(verdict, screening, chain_id, sender, recipient), untrusted_text)
+    verdict = _with_claims(_with_screening(verdict, screening, chain_id, sender, recipient), untrusted_text)
+    return _with_budget(verdict, screening.get("spend_guard"), chain_id, sender, recipient, amount_usdc, sym)
 
 
 @mcp.tool(annotations=SCREENED)
+@_receipted
 def check_x402_payment(
     network: Annotated[str, Field(description=D_NETWORK)],
     asset: Annotated[str, Field(description=D_ASSET)],
@@ -706,10 +904,12 @@ def check_x402_payment(
     verdict = _with_screening(_rules_verdict(chain_id, payer, pay_to, float(usdc), peg_deviation_pct, blocked),
                               screening, chain_id, payer, pay_to)
     verdict["amount_usdc"] = str(usdc)
-    return _with_claims(verdict, untrusted_text)
+    verdict = _with_claims(verdict, untrusted_text)
+    return _with_budget(verdict, screening.get("spend_guard"), chain_id, payer, pay_to, float(usdc))
 
 
 @mcp.tool(annotations=SCREENED)
+@_receipted
 def check_transaction(
     chain_id: Annotated[int, Field(description=D_CHAIN)],
     sender: Annotated[str, Field(description=D_SENDER)],
@@ -786,6 +986,7 @@ def check_transaction(
 
 
 @mcp.tool(annotations=SCREENED)
+@_receipted
 def check_x402_authorization(
     typed_data: Annotated[Union[dict, str], Field(description=D_TYPED_DATA)],
     sender: Annotated[str, Field(description=D_SENDER)],
@@ -850,6 +1051,7 @@ def check_x402_authorization(
 
 
 @mcp.tool(annotations=SCREENED)
+@_receipted
 def check_circle_wallets_request(
     operation: Annotated[str, Field(description=D_CIRCLE_OP)],
     request: Annotated[Union[dict, str], Field(description=D_CIRCLE_REQUEST)],
@@ -908,6 +1110,7 @@ def check_circle_wallets_request(
 
 
 @mcp.tool(annotations=SCREENED)
+@_receipted
 def check_user_operation(
     user_operation: Annotated[Union[dict, str], Field(description=D_USER_OP)],
     chain_id: Annotated[int, Field(description=D_USER_OP_CHAIN)],
@@ -1117,6 +1320,37 @@ def _dispute_input(dispute: Any) -> Any:
         out["policy"] = out["context"].get("policy")
     if "payload" not in out and isinstance(out.get("case"), dict):
         out["payload"] = out["case"]
+    return out
+
+
+@mcp.tool(annotations=CHECK_ONLY)
+def verify_receipt(
+    receipt: Annotated[dict, Field(description="A receipt exactly as a payment tool returned it (the 'receipt' object).")],
+) -> dict[str, Any]:
+    """Check that a decision receipt is intact and was signed with this server's SRA_RECEIPT_KEY.
+
+    Returns valid true only if no field has changed since it was issued: the decision (approve, hold or reject),
+    flags, explanation, the tool's inputs, the policy hash and the time. A receipt proves what the gate decided,
+    not that a payment was sent.
+    """
+    try:
+        signer = _receipt_signer()
+    except Exception as e:
+        return {"valid": False, "reason": f"SRA_RECEIPT_KEY is misconfigured: {e}"[:300]}
+    if signer is None:
+        return {"valid": False, "reason": "This server has no SRA_RECEIPT_KEY, so it cannot verify receipts."}
+    raw = os.environ["SRA_RECEIPT_KEY"].strip()
+    try:
+        key = bytes.fromhex(raw[2:] if raw.lower().startswith("0x") else raw)
+    except ValueError:
+        key = base64.b64decode(raw, validate=True)
+    ok = sdk_verify_receipt(receipt, key=key)
+    out: dict[str, Any] = {"valid": ok}
+    if ok:
+        out.update({k: receipt.get(k) for k in ("decision", "issued_at", "id", "policy_sha256")})
+        out["tool"] = (receipt.get("payment") or {}).get("tool")
+    else:
+        out["reason"] = "The receipt was changed after it was issued, or was not signed with this server's key."
     return out
 
 

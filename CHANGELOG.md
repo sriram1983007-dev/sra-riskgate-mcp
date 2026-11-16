@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.17.0 — 2026-11-16
+
+- **Budgets and anomalies:** `SRA_BUDGET_TOTAL`, `SRA_BUDGET_PER_PAYEE`, `SRA_BUDGET_WINDOW_HOURS`,
+  `SRA_MAX_PAYMENTS_PER_HOUR`, `SRA_AMOUNT_SPIKE_FACTOR` and `SRA_LEDGER_FILE` (sra-riskgate 1.8.0's `SpendGuard`).
+  The six payment tools hold a payment that breaks a rolling budget or looks unlike the wallet's history
+  (`BUDGET_EXCEEDED`, `PAYEE_BUDGET_EXCEEDED`, `RATE_SPIKE`, `AMOUNT_SPIKE`) and record approved payments; a
+  smart-account batch counts once. With a budget set, those tools declare `readOnlyHint` and `idempotentHint` false.
+- **Signed receipts:** with `SRA_RECEIPT_KEY`, every payment decision carries an HMAC-signed `receipt` (verdict,
+  tool inputs, policy hash, time). New tool `verify_receipt`. A receipt that cannot be made turns an approval
+  into a hold (`receipt_failed`).
+- **Policy file:** `SRA_POLICY_FILE` (JSON or YAML) sets limits, payees, tokens, screening, budgets and anomalies.
+  A setting given both in the file and as its own variable is a configuration error, never silently resolved.
+- Requires sra-riskgate 1.8.0.
+
 ## 0.16.0 — 2026-11-15
 
 - Screening providers from environment variables: `SRA_CHAINALYSIS_API_KEY`, `SRA_TRM_API_KEY` (or
