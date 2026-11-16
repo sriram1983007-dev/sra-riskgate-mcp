@@ -16,7 +16,7 @@ and USDG once the server enables them with `SRA_ALLOWED_TOKENS`.
 | `check_payment_rules` | Instant rule checks: OFAC SDN address match, address validity, self-transfers, amount ceiling, depeg in both directions, and self-asserted claims in the payment's text; `token` for USDT, USDB or USDG | Nothing |
 | `check_x402_payment` | The same checks for an x402 payment requirement, before the agent signs; from 0.11.0, a server asking for a signature valid longer than an hour (`max_timeout_seconds`) is held, except Circle Gateway requirements for Circle's real GatewayWallet | Nothing |
 | `check_transaction` | The same checks for the exact transaction the agent is about to sign (`to`, calldata, `value`); token approvals, other functions, other contracts and native ETH are held | Nothing |
-| `check_x402_authorization` | The same checks for the x402 signature itself (the EIP-3009 `TransferWithAuthorization` typed data) before signing; expired, post-dated or long-lived authorizations, permits and non-USDC domains are held | Nothing |
+| `check_x402_authorization` | The same checks for the x402 signature itself (the EIP-3009 `TransferWithAuthorization` typed data) before signing; expired, post-dated or long-lived authorizations, permits, and signatures for any token without EIP-3009 or not enabled (only USDC and, when enabled, USDG implement it) are held | Nothing |
 | `check_circle_wallets_request` | The same checks for a Circle Wallets (developer-controlled) API request before it is sent: transfers, contract executions, typed-data and transaction signing; `approve()`, other tokens, raw messages and wallet upgrades are held | Nothing |
 | `check_delegation` | An EIP-7702 authorization before signing it: always held, naming the delegate contract and whether it is valid on every chain | Nothing |
 | `check_user_operation` | An ERC-4337 UserOperation from a smart account (Coinbase Smart Wallet, Safe, Kernel, Nexus, SimpleAccount), call by call: an approval hidden in a batch is held, payments to the same payee are summed, self-calls, delegatecalls and unknown paymasters are held | Nothing |
@@ -139,7 +139,7 @@ ollama pull sriram1983007/sra-riskgate
 | `SRA_CHAINALYSIS_API_KEY` | unset | Screen sender and payee with Chainalysis's free sanctions API (0.16.0+) |
 | `SRA_TRM_API_KEY` / `SRA_TRM_KEYLESS` | unset | Screen with TRM Labs' free sanctions API, with a key or (`SRA_TRM_KEYLESS=1`) without one |
 | `SRA_RANGE_API_KEY` | unset | Screen with Range Risk API v2 |
-| `SRA_WEBACY_API_KEY` / `SRA_WEBACY_HIGH_RISK_SCORE` | unset / `100` | Screen with Webacy; an `overallRisk` at or above the score counts as high risk |
+| `SRA_WEBACY_API_KEY` / `SRA_WEBACY_HIGH_RISK_SCORE` | unset / `50` | Screen with Webacy; an `overallRisk` above the score counts as high risk (Webacy's own High band is 50.1 to 100; above 23 counts as medium) |
 | `SRA_ELLIPTIC_API_KEY` + `SRA_ELLIPTIC_API_SECRET` | unset | Screen with Elliptic Lens wallet screening. Both are needed; one without the other is a configuration error |
 | `SRA_ELLIPTIC_HIGH_RISK_SCORE` / `SRA_ELLIPTIC_SEVERE_RISK_SCORE` | `5` / `10` | Elliptic `risk_score` (0 to 10) that counts as high / severe; match them to your Elliptic risk rules |
 | `SRA_ELLIPTIC_UNSEEN_IS_CLEAN` | unset | `1` to pass an address Elliptic has never seen on chain (otherwise held: think of new payees) |
@@ -293,8 +293,10 @@ change USDC, USDT, USDB or USDG, and like the other settings it cannot be set fr
 ## Limitations
 
 These tools give risk signals, not legal or compliance advice. The OFAC match is an exact comparison with a
-dated snapshot, not a sanctions screening service. The tools do not verify signatures or read chain state: the verify tools check the receipt or balances you pass in. Only USDC on Ethereum, Base, Base Sepolia, Arc and Arc Testnet is
-checked by the x402 tool: none of the other listed tokens implements EIP-3009, which x402 signs.
+dated snapshot, not a sanctions screening service. The tools do not verify signatures or read chain state: the verify tools check the receipt or balances you pass in. `check_x402_payment` checks USDC on Ethereum, Base, Base Sepolia, Arc and Arc Testnet;
+`check_x402_authorization` also checks USDG (Ethereum, Robinhood Chain) when `SRA_ALLOWED_TOKENS` enables it. USDT
+and USDB do not implement EIP-3009, which x402 signs, so their x402 signatures are held. Receipts (`SRA_RECEIPT_KEY`)
+are attached to the six payment tools only, not to `check_delegation` or `check_payment_with_model`.
 
 ## Related
 

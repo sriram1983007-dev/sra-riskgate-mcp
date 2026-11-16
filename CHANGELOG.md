@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.1 — 2026-11-16
+
+- Requires sra-riskgate 1.8.1 (Audit #18): Elliptic sanctions signals that were ignored (`is_after_sanction_date`,
+  `risk_triggers.is_sanctioned`, `entity_details`) now give a sanctions match or hold, and Webacy's `overallRisk`
+  follows Webacy's documented bands. `SRA_WEBACY_HIGH_RISK_SCORE` now defaults to 50 (was 100).
+- README: x402 signatures for USDG are checked when enabled (two lines still said USDC only), and receipts cover
+  the six payment tools only.
+
 ## 0.17.0 — 2026-11-16
 
 - **Budgets and anomalies:** `SRA_BUDGET_TOTAL`, `SRA_BUDGET_PER_PAYEE`, `SRA_BUDGET_WINDOW_HOURS`,

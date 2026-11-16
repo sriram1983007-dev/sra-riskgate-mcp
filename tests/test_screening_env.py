@@ -200,3 +200,13 @@ def test_payment_tools_are_open_world_only_when_screening_is_configured(monkeypa
     finally:
         monkeypatch.delenv("SRA_RANGE_API_KEY")
         importlib.reload(server)
+
+
+def test_webacy_default_follows_webacys_high_band(net, monkeypatch):
+    """0.17.1: overallRisk above 50 is Webacy's High band, so it holds by default (was 100)."""
+    def webacy(url, headers, timeout):
+        return 200, {"high": 0, "medium": 0, "overallRisk": 60, "issues": [], "details": {"address_info": {}}}
+    monkeypatch.setattr(scr, "_urllib_get", webacy)
+    monkeypatch.setenv("SRA_WEBACY_API_KEY", "k")
+    out = rules(YOU)
+    assert out["decision"] == "hold" and "PROVIDER_RISK_HIGH" in out["flags"]

@@ -57,7 +57,7 @@ Screening providers (0.16.0+, all optional; any one set turns screening on for t
   SRA_CHAINALYSIS_API_KEY   Chainalysis's free sanctions API
   SRA_TRM_API_KEY           TRM Labs' free sanctions API; or SRA_TRM_KEYLESS=1 for TRM's keyless access
   SRA_RANGE_API_KEY         Range Risk API v2
-  SRA_WEBACY_API_KEY        Webacy address risk (SRA_WEBACY_HIGH_RISK_SCORE, default 100)
+  SRA_WEBACY_API_KEY        Webacy address risk (SRA_WEBACY_HIGH_RISK_SCORE, default 50: Webacy's High band)
   SRA_ELLIPTIC_API_KEY + SRA_ELLIPTIC_API_SECRET   Elliptic Lens wallet screening (SRA_ELLIPTIC_HIGH_RISK_SCORE,
                      default 5; SRA_ELLIPTIC_SEVERE_RISK_SCORE, default 10; SRA_ELLIPTIC_UNSEEN_IS_CLEAN=1 to pass
                      addresses Elliptic has never seen, which are otherwise held)
@@ -511,7 +511,7 @@ def _screening_from_env() -> dict[str, Any]:
         providers.append(RangeRisk(os.environ["SRA_RANGE_API_KEY"], timeout=timeout))
     if _env_set("SRA_WEBACY_API_KEY"):
         providers.append(WebacyRisk(os.environ["SRA_WEBACY_API_KEY"], timeout=timeout,
-                                    high_risk_score=_number_env("SRA_WEBACY_HIGH_RISK_SCORE", 100.0)))
+                                    high_risk_score=_number_env("SRA_WEBACY_HIGH_RISK_SCORE", 50.0)))
     key, secret = _env_set("SRA_ELLIPTIC_API_KEY"), _env_set("SRA_ELLIPTIC_API_SECRET")
     if key != secret:
         raise ValueError("Elliptic needs both SRA_ELLIPTIC_API_KEY and SRA_ELLIPTIC_API_SECRET")
