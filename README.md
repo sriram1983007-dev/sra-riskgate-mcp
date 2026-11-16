@@ -24,6 +24,7 @@ and USDG once the server enables them with `SRA_ALLOWED_TOKENS`.
 | `check_allowances` | Standing approvals behind pull payments (subscriptions, loan repayments): unlimited, above `SRA_MAX_ALLOWANCE` or to a spender outside `SRA_EXPECTED_SPENDERS` is held; a sanctioned or blocked spender is rejected | Nothing (you pass the allowances you read) |
 | `verify_gateway_balances` | **After** a Circle Gateway payment: the payer's Gateway balance went down, and the payee's up, by at least the amount; reports when the batch has not settled yet | Nothing (you pass the balances) |
 | `check_dispute_verdict` | A dispute verdict (from the model or anyone) against the dispute window, recomputed from the dates: a deny or dismiss resting on a false "outside the window" claim becomes `escalate_to_human`, never a refund. On the benchmark it lowers wrongful denials from 26.0% to 0.85% (55.3% to 0.85% on the Q4_K_M build) | Nothing (you pass the dispute and the verdict) |
+| `verify_receipt` | Checks that a decision receipt (0.17.0+, with `SRA_RECEIPT_KEY`) is intact and was signed by this server | `SRA_RECEIPT_KEY` |
 | `check_payment_with_model` | Full review by [SRA-RiskGate-4B](https://huggingface.co/sriram1983007/SRA-RiskGate-4B) of the policy, the payment and your verification results | The model running locally |
 
 Every tool fails closed. Malformed input is rejected, and if the model is unreachable or answers
@@ -144,6 +145,13 @@ ollama pull sriram1983007/sra-riskgate
 | `SRA_ELLIPTIC_UNSEEN_IS_CLEAN` | unset | `1` to pass an address Elliptic has never seen on chain (otherwise held: think of new payees) |
 | `SRA_SCREENING_HOLD_AT` / `SRA_SCREENING_REJECT_AT` | `high` / `severe` | Provider risk levels (`none`, `low`, `medium`, `high`, `severe`) that hold and reject |
 | `SRA_SCREENING_TIMEOUT` | `10` | Seconds per provider call |
+| `SRA_POLICY_FILE` | unset | A JSON or YAML policy file (0.17.0+, sra-riskgate 1.8.0 format) for limits, payees, tokens, screening, budgets and anomalies. A setting in the file and its own variable together is a configuration error |
+| `SRA_BUDGET_TOTAL` / `SRA_BUDGET_PER_PAYEE` | unset | Rolling budget per agent wallet, and per payee (0.17.0+). A payment that would exceed it is held |
+| `SRA_BUDGET_WINDOW_HOURS` | `24` | The budget window |
+| `SRA_MAX_PAYMENTS_PER_HOUR` | unset | Hold once the wallet made this many approved payments in the last hour (`RATE_SPIKE`) |
+| `SRA_AMOUNT_SPIKE_FACTOR` | unset | Hold a payment more than this many times the wallet's usual payment to that payee (`AMOUNT_SPIKE`) |
+| `SRA_LEDGER_FILE` | memory | Where approved payments are recorded for the budgets (JSON Lines). Without it, the count starts again when the server restarts |
+| `SRA_RECEIPT_KEY` / `SRA_RECEIPT_KEY_ID` | unset | A secret (hex or base64, 16+ bytes): every payment decision then carries a signed `receipt` (0.17.0+) |
 
 A malformed address or an unreadable file in any of these gives `reject` with `configuration_error`, so a
 typo can never silently weaken a check. Example:
@@ -184,10 +192,43 @@ call. A provider set up wrongly (an Elliptic key without its secret, a threshold
 every payment tool return `reject` with `configuration_error`, so a typo never turns screening off. With no
 provider set, nothing leaves your machine, as before.
 
+### Budgets, receipts and one policy file (0.17.0+)
+
+A per-payment limit does not stop an agent being drained by many small payments. Set a budget and the six
+payment tools count approved payments per agent wallet in a local ledger:
+
+```json
+"env": {
+  "SRA_BUDGET_TOTAL": "200",
+  "SRA_BUDGET_PER_PAYEE": "50",
+  "SRA_MAX_PAYMENTS_PER_HOUR": "60",
+  "SRA_LEDGER_FILE": "~/.sra-riskgate/ledger.jsonl",
+  "SRA_RECEIPT_KEY": "<64 hex characters>"
+}
+```
+
+| Flag (all `hold`) | When |
+| --- | --- |
+| `BUDGET_EXCEEDED` / `PAYEE_BUDGET_EXCEEDED` | This payment would take the wallet's approved total, or its total to this payee, over the budget in the window |
+| `RATE_SPIKE` | The wallet already made `SRA_MAX_PAYMENTS_PER_HOUR` approved payments in the last hour |
+| `AMOUNT_SPIKE` | The amount is more than `SRA_AMOUNT_SPIKE_FACTOR` times the wallet's median payment to this payee |
+
+An approved payment counts as soon as it is approved, so payments checked one after another all count; a
+smart-account batch counts once, as a whole. A corrupt ledger holds every payment.
+
+With `SRA_RECEIPT_KEY`, every payment decision carries a signed `receipt`: the decision, flags, explanation, the
+tool's inputs, the policy's hash and the time. `verify_receipt` checks it later; change any field and it is invalid.
+
+`SRA_POLICY_FILE` keeps all of this in one reviewed file instead of environment variables (see the
+[policy format](https://github.com/sriram1983007-dev/sra-riskgate#one-policy-file-for-every-check-180)). API keys
+stay in environment variables: the file only names them (`api_key_env`).
+
 ## Tool annotations
 
-Every tool declares MCP tool annotations, so clients know none of them sends, signs or changes anything:
-`readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`. `openWorldHint` is `true` only for
+Every tool declares MCP tool annotations, so clients know none of them sends or signs anything:
+`readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`. With a budget configured (0.17.0+), the six
+payment tools record approved payments in the local ledger, so they declare `readOnlyHint: false` and
+`idempotentHint: false`. `openWorldHint` is `true` only for
 `check_payment_with_model`, which calls your model endpoint, and, when a screening provider is configured, for
 the six payment tools, which then call it. Everything else runs entirely offline.
 

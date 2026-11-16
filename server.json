@@ -3,7 +3,7 @@
   "name": "io.github.sriram1983007-dev/sra-riskgate-mcp",
   "title": "SRA-RiskGate",
   "description": "Check stablecoin and x402 payments before an AI agent pays: approve, hold or reject.",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "repository": {
     "url": "https://github.com/sriram1983007-dev/sra-riskgate-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "sra-riskgate-mcp",
-      "version": "0.16.0",
+      "version": "0.17.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -294,6 +294,69 @@
         {
           "name": "SRA_SCREENING_TIMEOUT",
           "description": "Seconds per screening provider call (default: 10)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_POLICY_FILE",
+          "description": "Path to a JSON or YAML policy file (sra-riskgate 1.8.0 format): limits, payees, tokens, screening, budgets, anomalies",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_BUDGET_TOTAL",
+          "description": "Rolling budget per agent wallet: approved payments above this total in the window are held",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_BUDGET_PER_PAYEE",
+          "description": "Rolling budget per payee for each agent wallet",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_BUDGET_WINDOW_HOURS",
+          "description": "Budget window in hours (default: 24)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_MAX_PAYMENTS_PER_HOUR",
+          "description": "Hold a payment once the wallet made this many approved payments in the last hour",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_AMOUNT_SPIKE_FACTOR",
+          "description": "Hold a payment larger than this many times the wallet's median payment to that payee",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_LEDGER_FILE",
+          "description": "Where approved payments are recorded for budgets (JSON Lines); default: memory only",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "SRA_RECEIPT_KEY",
+          "description": "Secret (hex or base64, at least 16 bytes) to sign a receipt for every payment decision",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "SRA_RECEIPT_KEY_ID",
+          "description": "Name recorded in receipts for the signing key (default: sra-riskgate-mcp)",
           "isRequired": false,
           "format": "string",
           "isSecret": false
