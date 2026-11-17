@@ -232,3 +232,33 @@ def test_annotations_reflect_budgets(monkeypatch):
     finally:
         monkeypatch.delenv("SRA_BUDGET_TOTAL")
         importlib.reload(server)
+
+
+# ---------------------------------------------------------------- the sra-riskgate command (0.17.2+)
+
+def test_cli_verifies_a_saved_tool_result_and_agrees_with_the_server(monkeypatch, tmp_path, capsys):
+    from sra_riskgate.cli import main
+    monkeypatch.setenv("SRA_RECEIPT_KEY", KEY_HEX)
+    out = rules(amount=5)
+    saved = tmp_path / "result.json"
+    saved.write_text(json.dumps(out))                                      # the whole tool result
+    assert main(["receipt", "verify", str(saved), "--key-env", "SRA_RECEIPT_KEY"]) == 0
+    out["receipt"]["decision"] = "reject"
+    saved.write_text(json.dumps(out))
+    assert main(["receipt", "verify", str(saved), "--key-env", "SRA_RECEIPT_KEY"]) == 1
+    capsys.readouterr()
+
+
+def test_cli_dry_run_matches_the_server_and_spends_nothing(monkeypatch, tmp_path, capsys):
+    from sra_riskgate.cli import main
+    led = tmp_path / "ledger.jsonl"
+    path = write_policy(tmp_path, {"version": 1, "max_amount": 50, "budgets": {"total": 30}, "ledger": str(led)})
+    assert main(["policy", "validate", path]) == 0
+    cli = ["check", "--policy", path, "--chain", "8453", "--sender", ME, "--to", YOU, "--peg", "0", "--amount"]
+    assert main(cli + ["20"]) == 0 and main(cli + ["20"]) == 0           # dry runs spend nothing
+    monkeypatch.setenv("SRA_POLICY_FILE", path)
+    assert rules(amount=20)["decision"] == "approve"                      # the server records it
+    assert main(cli + ["20"]) == 10                                       # and the CLI now sees the budget used
+    assert rules(amount=20)["decision"] == "hold"
+    assert len(led.read_text().splitlines()) == 1
+    capsys.readouterr()

@@ -6,8 +6,8 @@
 [![M8ven Verified](https://m8ven.ai/badge/mcp/sriram1983007-dev-sra-riskgate-mcp-1vnq1q?v=2728cabf723fc8d83e26ea48cd6c398e&variant=verified)](https://m8ven.ai/mcp/sriram1983007-dev-sra-riskgate-mcp-1vnq1q?s=readme)
 [![mcprush Grade A](https://img.shields.io/badge/mcprush-Grade_A_%C2%B7_98%2F100-c6f36b)](https://mcprush.com/sriram1983007-dev/sra-riskgate-mcp)
 
-An [MCP](https://modelcontextprotocol.io) server that lets AI assistants and agents check a stablecoin
-payment **before** paying it: `approve`, `hold` or `reject`. USDC by default; from 0.13.0 also USDT, USDB (Bridge)
+**The pre-sign firewall for AI agents that pay.** An [MCP](https://modelcontextprotocol.io) server that lets AI
+assistants and agents check a stablecoin payment **before** paying it: `approve`, `hold` or `reject`. USDC by default; from 0.13.0 also USDT, USDB (Bridge)
 and USDG once the server enables them with `SRA_ALLOWED_TOKENS`.
 
 | Tool | What it does | Needs |
@@ -222,6 +222,23 @@ tool's inputs, the policy's hash and the time. `verify_receipt` checks it later;
 `SRA_POLICY_FILE` keeps all of this in one reviewed file instead of environment variables (see the
 [policy format](https://github.com/sriram1983007-dev/sra-riskgate#one-policy-file-for-every-check-180)). API keys
 stay in environment variables: the file only names them (`api_key_env`).
+
+### Check your setup and audit receipts from a terminal (0.17.2+)
+
+The server now requires sra-riskgate 1.9.1, whose `sra-riskgate` command works on the same policy file and the
+same receipts, without starting an MCP client:
+
+```bash
+uvx sra-riskgate policy validate payment-policy.json            # before you point SRA_POLICY_FILE at it
+uvx sra-riskgate check --policy payment-policy.json --chain 8453 \
+    --sender 0xAgent --to 0xPayee --amount 25 --peg 0           # what the server would decide (exit 0/10/20)
+uvx sra-riskgate receipt verify result.json --key-env SRA_RECEIPT_KEY   # a saved tool result or its receipt
+```
+
+`check` is a dry run: it reads the budget ledger named in the policy but never adds to it, so testing does not
+spend your agent's budget. `receipt verify` lets an auditor or a finance team check a receipt with the key alone,
+with no server and no model. `check` only reads the policy file, not the server's other `SRA_` variables, so it
+matches the server when the policy file holds your settings.
 
 ## Tool annotations
 
