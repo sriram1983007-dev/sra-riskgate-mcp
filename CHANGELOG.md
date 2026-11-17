@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.2 — 2026-11-17
+
+- Requires sra-riskgate 1.9.1, which adds the `sra-riskgate` command: `policy validate` checks the file you give
+  `SRA_POLICY_FILE`, `check --policy` shows what the server would decide (a dry run that never spends the
+  budget), and `receipt verify --key-env SRA_RECEIPT_KEY` checks a receipt from a saved tool result, with no
+  server running. No change to any tool.
+- Registry and PyPI descriptions now lead with "the pre-sign firewall for AI agents that pay".
+
 ## 0.17.1 — 2026-11-16
 
 - Requires sra-riskgate 1.8.1 (Audit #18): Elliptic sanctions signals that were ignored (`is_after_sanction_date`,
