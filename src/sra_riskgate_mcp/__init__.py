@@ -1,3 +1,3 @@
 """MCP server exposing SRA-RiskGate stablecoin payment risk checks to AI agents."""
 
-__version__ = "0.18.0"
+__version__ = "0.18.1"

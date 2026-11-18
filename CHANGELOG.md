@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.1 — 2026-11-18
+
+- Requires sra-riskgate 1.10.1 (Audit #19/#20): with `SRA_ELLIPTIC_API_KEY` set, a sanctions listing inside the
+  screened wallet's own Elliptic entity (`entity_details`, without `is_after_sanction_date`) now rejects; it was
+  approved before.
+- README: strict rejecting every labelled attack follows from how the dataset defines an attack; the evidence for
+  `SRA_LOOKALIKE_CHECK=strict` is none of 4,967 normal payments wrongly rejected.
+
 ## 0.18.0 — 2026-11-18
 
 - **`SRA_LOOKALIKE_CHECK=strict`** (or `lookalike_check` in `SRA_POLICY_FILE`): with `SRA_KNOWN_RECIPIENTS`, every
