@@ -32,6 +32,9 @@ Configuration (environment variables):
                      else is held (NEW_COUNTERPARTY). Unset: check off. Comma- or space-separated
                      addresses, or a file with one address per line (# comments allowed).
   SRA_BLOCKED_ADDRESSES / SRA_BLOCKED_ADDRESSES_FILE  addresses to always reject, same formats.
+  SRA_LOOKALIKE_CHECK  "standard" (default) or "strict" (0.18.0+). With SRA_KNOWN_RECIPIENTS, a payee imitating a
+                     known one is rejected (LOOKALIKE_RECIPIENT): standard needs 7 shared characters, 3+ at each
+                     end; strict also rejects 3 at each end. Any other value is a configuration error.
   SRA_MAX_AUTH_VALIDITY_SECONDS  longest an x402 authorization may stay valid before it is held (default: 3600)
   SRA_MAX_GATEWAY_VALIDITY_SECONDS  the same for Circle Gateway batched payments, which Gateway requires
                      to stay valid for at least 3 days (default: 691200, 8 days; Circle's SDK signs for
@@ -98,7 +101,7 @@ from sra_riskgate import (check_dispute_verdict as sdk_check_dispute_verdict, Ru
                           verify_gateway_balances as sdk_verify_gateway_balances,
                           verify_settlement as sdk_verify_settlement,
                           check_allowances as sdk_check_allowances)
-from sra_riskgate.counterparty import parse_address_list
+from sra_riskgate.counterparty import parse_address_list, parse_lookalike_check
 from sra_riskgate import (ReceiptSigner, SpendGuard, SpendLedger, issue_receipt, load_policy,
                           verify_receipt as sdk_verify_receipt)
 from sra_riskgate.screening import (RISK_ORDER, ChainalysisSanctions, EllipticRisk, RangeRisk, TRMSanctions,
@@ -290,7 +293,7 @@ class _PolicyConflict(Exception):
 _POLICY_KEY = {"SRA_MAX_AMOUNT": "max_amount", "SRA_DEPEG_HOLD_PCT": "depeg_hold_pct",
                "SRA_DEPEG_REJECT_PCT": "depeg_reject_pct", "SRA_KNOWN_RECIPIENTS": "known_recipients",
                "SRA_BLOCKED_ADDRESSES": "blocked_addresses", "SRA_EXPECTED_DELEGATES": "expected_delegates",
-               "SRA_ALLOWED_TOKENS": "allowed_tokens"}
+               "SRA_ALLOWED_TOKENS": "allowed_tokens", "SRA_LOOKALIKE_CHECK": "lookalike_check"}
 _POLICY_CACHE: dict = {}
 
 
@@ -569,7 +572,17 @@ def _spend_guard() -> Optional[SpendGuard]:
 
 def _with_guard(kw: dict[str, Any]) -> dict[str, Any]:
     g = _spend_guard()
-    return {**kw, "spend_guard": g} if g is not None else kw
+    kw = {**kw, "spend_guard": g} if g is not None else kw
+    return {**kw, "lookalike_check": _lookalike_check()}
+
+
+def _lookalike_check() -> str:
+    """SRA_LOOKALIKE_CHECK (or the policy file's lookalike_check): "standard" when unset. Raises on anything else."""
+    found, v = _from_policy("SRA_LOOKALIKE_CHECK")
+    if not found:
+        v = (os.environ.get("SRA_LOOKALIKE_CHECK") or "").strip() or "standard"
+    parse_lookalike_check(v)
+    return v
 
 
 def _with_budget(verdict: dict[str, Any], guard: Optional[SpendGuard], chain_id: Any, sender: Any,
@@ -646,13 +659,14 @@ def _rules_verdict(chain_id: int, sender: str, recipient: str, amount: float,
                    blocked_addresses: Optional[list[str]] = None, token: str = "USDC") -> dict[str, Any]:
     try:
         gate = _gate()
+        lookalike = _lookalike_check()
     except Exception as e:  # e.g. SRA_DEPEG_HOLD_PCT >= SRA_DEPEG_REJECT_PCT, or a bad address list
         return _config_error(e)
     try:
         v = gate.inspect(TransactionPayload(
             chain_id=chain_id, token=token, sender=sender, recipient=recipient,
             amount=amount, peg_deviation_pct=peg_deviation_pct,
-        ), blocked_addresses=blocked_addresses)
+        ), blocked_addresses=blocked_addresses, lookalike_check=lookalike)
     except Exception as e:  # malformed address, self-transfer, bad amount...
         return {
             "decision": "reject", "risk_score": 1.0, "flags": ["invalid_payment"],

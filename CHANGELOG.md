@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.0 — 2026-11-18
+
+- **`SRA_LOOKALIKE_CHECK=strict`** (or `lookalike_check` in `SRA_POLICY_FILE`): with `SRA_KNOWN_RECIPIENTS`, every
+  payment tool also rejects a payee imitating a known one by only 3 characters at each end (sra-riskgate 1.10.0).
+  On 90 days of real Ethereum USDC and USDT payments, the default rule rejected 171 of 179 real address-poisoning
+  attacks and strict rejected all 179, with none of 4,967 normal payments wrongly rejected. Default `standard`, so
+  no decision changes unless you set it. Any other value, or the variable and the policy setting together, is a
+  configuration error.
+- Requires sra-riskgate 1.10.0.
+
 ## 0.17.2 — 2026-11-17
 
 - Requires sra-riskgate 1.9.1, which adds the `sra-riskgate` command: `policy validate` checks the file you give
