@@ -3,7 +3,7 @@
   "name": "io.github.sriram1983007-dev/sra-riskgate-mcp",
   "title": "SRA-RiskGate",
   "description": "The pre-sign firewall for AI agents that pay: approve, hold or reject stablecoin and x402 payments.",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "repository": {
     "url": "https://github.com/sriram1983007-dev/sra-riskgate-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "sra-riskgate-mcp",
-      "version": "0.18.0",
+      "version": "0.18.1",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"

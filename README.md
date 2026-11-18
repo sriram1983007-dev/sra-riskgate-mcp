@@ -93,8 +93,9 @@ blocklist argument is safe for agents to use because it can only make a decision
 
 A payee that imitates a known one (address poisoning) is **rejected** as `LOOKALIKE_RECIPIENT`. On 90 days of
 real Ethereum USDC and USDT payments, the default rule rejected 171 of 179 real poisoning attacks; the 8 it missed
-imitated only 3 characters at each end. `SRA_LOOKALIKE_CHECK=strict` (0.18.0+) rejected all 179 and wrongly
-rejected none of 4,967 normal payments ([dataset](https://huggingface.co/datasets/sriram1983007/sra-real-world-poisoning)).
+imitated only 3 characters at each end. `SRA_LOOKALIKE_CHECK=strict` (0.18.0+) rejects those too (the dataset
+defines an attack as sharing at least 3 characters at each end, so that part follows from the definition), and it
+wrongly rejected none of 4,967 normal payments ([dataset](https://huggingface.co/datasets/sriram1983007/sra-real-world-poisoning)).
 Use strict for agent wallets with a modest set of payees; a wallet paying thousands of addresses meets chance
 3+3 matches more often.
 
