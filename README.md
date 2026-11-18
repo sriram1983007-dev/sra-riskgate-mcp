@@ -91,6 +91,13 @@ Known payees come **only from the server's configuration**, never from tool argu
 an agent whose input has been tampered with cannot declare an attacker's address "known". The
 blocklist argument is safe for agents to use because it can only make a decision stricter.
 
+A payee that imitates a known one (address poisoning) is **rejected** as `LOOKALIKE_RECIPIENT`. On 90 days of
+real Ethereum USDC and USDT payments, the default rule rejected 171 of 179 real poisoning attacks; the 8 it missed
+imitated only 3 characters at each end. `SRA_LOOKALIKE_CHECK=strict` (0.18.0+) rejected all 179 and wrongly
+rejected none of 4,967 normal payments ([dataset](https://huggingface.co/datasets/sriram1983007/sra-real-world-poisoning)).
+Use strict for agent wallets with a modest set of payees; a wallet paying thousands of addresses meets chance
+3+3 matches more often.
+
 ## Install
 
 Add it to your MCP client's configuration (Claude Desktop, Cursor and others):
@@ -128,6 +135,7 @@ ollama pull sriram1983007/sra-riskgate
 | `SRA_DEPEG_HOLD_PCT` / `SRA_DEPEG_REJECT_PCT` | `1` / `5` | Depeg thresholds in percent, for the stablecoin paid |
 | `SRA_KNOWN_RECIPIENTS` | unset (check off) | Verified payees, comma- or space-separated. Payments to anyone else are held (`NEW_COUNTERPARTY`). Set but empty: every payment is held |
 | `SRA_KNOWN_RECIPIENTS_FILE` | unset | A file with one verified payee per line (`#` comments allowed), added to the list above |
+| `SRA_LOOKALIKE_CHECK` | `standard` | `strict` (0.18.0+) also rejects a payee imitating a known one by only 3 characters at each end. Needs `SRA_KNOWN_RECIPIENTS` |
 | `SRA_BLOCKED_ADDRESSES` / `SRA_BLOCKED_ADDRESSES_FILE` | unset | Addresses to always reject, same formats |
 | `SRA_MAX_AUTH_VALIDITY_SECONDS` | `3600` | Longest an x402 authorization may stay valid before it is held |
 | `SRA_MAX_GATEWAY_VALIDITY_SECONDS` | `691200` (8 days) | The same for Circle Gateway batched payments, which must stay valid for at least 3 days |

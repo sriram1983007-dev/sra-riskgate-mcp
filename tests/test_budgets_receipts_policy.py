@@ -262,3 +262,46 @@ def test_cli_dry_run_matches_the_server_and_spends_nothing(monkeypatch, tmp_path
     assert rules(amount=20)["decision"] == "hold"
     assert len(led.read_text().splitlines()) == 1
     capsys.readouterr()
+
+
+# ---------------------------------------------------------------- strict look-alike check (0.18.0+)
+
+REAL = "0x2ffb" + "8" * 32 + "b7ee"
+FAKE_33 = "0x2ff" + "9" * 34 + "7ee"
+
+
+def _to_fake(**kw):
+    return call("check_payment_rules", {"chain_id": 8453, "sender": ME, "recipient": FAKE_33, "amount_usdc": 5,
+                                        "peg_deviation_pct": 0.0, **kw})
+
+
+def _tx_to_fake():
+    return call("check_transaction", {"chain_id": 8453, "sender": ME, "to": USDC_ADDRESSES[8453],
+                                      "data": transfer_data(FAKE_33, 5_000_000), "peg_deviation_pct": 0.0})
+
+
+def test_lookalike_check_standard_by_default(monkeypatch):
+    monkeypatch.setenv("SRA_KNOWN_RECIPIENTS", REAL)
+    assert _to_fake()["decision"] == "hold" and _tx_to_fake()["decision"] == "hold"
+
+
+def test_lookalike_check_strict_rejects_three_plus_three(monkeypatch):
+    monkeypatch.setenv("SRA_KNOWN_RECIPIENTS", REAL)
+    monkeypatch.setenv("SRA_LOOKALIKE_CHECK", "strict")
+    for out in (_to_fake(), _tx_to_fake()):
+        assert out["decision"] == "reject" and out["flags"] == ["LOOKALIKE_RECIPIENT"]
+
+
+@pytest.mark.parametrize("bad", ["Strict", "loose", "6"])
+def test_bad_lookalike_check_is_a_configuration_error(monkeypatch, bad):
+    monkeypatch.setenv("SRA_LOOKALIKE_CHECK", bad)
+    assert rules()["flags"] == ["configuration_error"]
+    assert tx(1_000_000)["flags"] == ["configuration_error"]
+
+
+def test_lookalike_check_from_the_policy_file_and_conflict(monkeypatch, tmp_path):
+    monkeypatch.setenv("SRA_POLICY_FILE", write_policy(tmp_path, {"version": 1, "known_recipients": [REAL],
+                                                                  "lookalike_check": "strict"}))
+    assert _to_fake()["decision"] == "reject" and _tx_to_fake()["decision"] == "reject"
+    monkeypatch.setenv("SRA_LOOKALIKE_CHECK", "standard")
+    assert _to_fake()["flags"] == ["configuration_error"]
