@@ -14,6 +14,8 @@ Tools:
   verify_gateway_balances    after settlement: a Circle Gateway payment, from balances before and after
   check_allowances           standing approvals behind pull payments (subscriptions, loan repayments)
   check_dispute_verdict      a dispute verdict against the dispute window; false window claims are escalated
+  verify_receipt             a decision receipt (with SRA_RECEIPT_KEY) is intact and was signed by this server
+  verify_receipt_chain       a chain of receipts (SRA_RECEIPT_CHAIN_FILE) has no edited, missing or reordered entry
 
 Configuration (environment variables):
   SRA_BASE_URL       OpenAI-compatible endpoint for the model (default: Ollama, http://localhost:11434/v1)
@@ -35,6 +37,11 @@ Configuration (environment variables):
   SRA_LOOKALIKE_CHECK  "standard" (default) or "strict" (0.18.0+). With SRA_KNOWN_RECIPIENTS, a payee imitating a
                      known one is rejected (LOOKALIKE_RECIPIENT): standard needs 7 shared characters, 3+ at each
                      end; strict also rejects 3 at each end. Any other value is a configuration error.
+  SRA_NEW_COUNTERPARTY  "hold" (default) or "allow" (0.19.0+). "allow" keeps the look-alike check against
+                     SRA_KNOWN_RECIPIENTS but no longer holds every payee not in the list.
+  SRA_RECEIPT_CHAIN_FILE  with SRA_RECEIPT_KEY, a JSON Lines file (0.19.0+): every receipt is linked to the one
+                     before it (prev_sha256) and appended, so an edited, deleted or reordered decision is
+                     detectable (verify_receipt_chain tool, or `sra-riskgate receipt verify-chain`).
   SRA_MAX_AUTH_VALIDITY_SECONDS  longest an x402 authorization may stay valid before it is held (default: 3600)
   SRA_MAX_GATEWAY_VALIDITY_SECONDS  the same for Circle Gateway batched payments, which Gateway requires
                      to stay valid for at least 3 days (default: 691200, 8 days; Circle's SDK signs for
@@ -81,6 +88,7 @@ import json
 import math
 import os
 import re
+import threading
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Optional, Union
 
@@ -101,12 +109,13 @@ from sra_riskgate import (check_dispute_verdict as sdk_check_dispute_verdict, Ru
                           verify_gateway_balances as sdk_verify_gateway_balances,
                           verify_settlement as sdk_verify_settlement,
                           check_allowances as sdk_check_allowances)
-from sra_riskgate.counterparty import parse_address_list, parse_lookalike_check
+from sra_riskgate.counterparty import parse_address_list, parse_lookalike_check, parse_new_counterparty
 from sra_riskgate import (ReceiptSigner, SpendGuard, SpendLedger, issue_receipt, load_policy,
-                          verify_receipt as sdk_verify_receipt)
+                          verify_receipt as sdk_verify_receipt, verify_receipt_chain as sdk_verify_receipt_chain)
 from sra_riskgate.screening import (RISK_ORDER, ChainalysisSanctions, EllipticRisk, RangeRisk, TRMSanctions,
                                     WebacyRisk, screen_addresses, screening_decision)
 from sra_riskgate.payload_claims import FLAG as CLAIMS_FLAG
+from sra_riskgate.payload_claims import PAYEE_CHANGE_FLAG, scan_payee_change
 from sra_riskgate.chains import (GATEWAY_BATCHED_DOMAIN, NATIVE_USDC_CHAINS, NATIVE_USDC_DECIMALS, STABLECOINS,
                                   USDC_ADDRESSES, USDC_DECIMALS, chain_id_from_network, is_usdc,
                                   parse_allowed_tokens, register_stablecoin, stablecoin_at)
@@ -273,7 +282,11 @@ def _receipted(fn):
             bound = sig.bind(*args, **kwargs)
             inputs = json.loads(json.dumps(dict(bound.arguments), default=str))
             pol = _policy()
-            receipt = issue_receipt(verdict, signer, payment={"tool": fn.__name__, "input": inputs}, policy=pol)
+            chain = (os.environ.get("SRA_RECEIPT_CHAIN_FILE") or "").strip()
+            if chain:
+                receipt = _chained_receipt(chain, verdict, signer, {"tool": fn.__name__, "input": inputs}, pol)
+            else:
+                receipt = issue_receipt(verdict, signer, payment={"tool": fn.__name__, "input": inputs}, policy=pol)
             return {**verdict, "receipt": receipt}
         except Exception as e:
             if verdict.get("decision") == "reject":
@@ -285,6 +298,37 @@ def _receipted(fn):
     return wrapper
 
 
+_CHAIN_LOCK = threading.Lock()
+
+
+def _read_chain(path: str) -> list:
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh if line.strip()]  # a corrupt line raises: the caller fails closed
+
+
+def _chained_receipt(path: str, verdict: dict, signer: ReceiptSigner, payment: dict, policy: Any) -> dict:
+    """Issue a receipt linked to the last one in SRA_RECEIPT_CHAIN_FILE and append it (0.19.0+)."""
+    path = os.path.expanduser(path)
+    with _CHAIN_LOCK, open(path + ".lock", "a") as lk:
+        try:
+            import fcntl
+            fcntl.flock(lk, fcntl.LOCK_EX)
+        except ImportError:  # pragma: no cover - Windows: the thread lock still applies
+            pass
+        last = None
+        if os.path.exists(path):
+            with open(path, "rb") as fh:  # only the last line is needed
+                lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+            last = json.loads(lines[-1]) if lines else None
+        receipt = issue_receipt(verdict, signer, payment=payment, policy=policy, previous=last,
+                                chain_start=last is None)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n")
+        return receipt
+
+
 class _PolicyConflict(Exception):
     """A setting given both in SRA_POLICY_FILE and as its own environment variable (never silently resolved)."""
 
@@ -293,7 +337,8 @@ class _PolicyConflict(Exception):
 _POLICY_KEY = {"SRA_MAX_AMOUNT": "max_amount", "SRA_DEPEG_HOLD_PCT": "depeg_hold_pct",
                "SRA_DEPEG_REJECT_PCT": "depeg_reject_pct", "SRA_KNOWN_RECIPIENTS": "known_recipients",
                "SRA_BLOCKED_ADDRESSES": "blocked_addresses", "SRA_EXPECTED_DELEGATES": "expected_delegates",
-               "SRA_ALLOWED_TOKENS": "allowed_tokens", "SRA_LOOKALIKE_CHECK": "lookalike_check"}
+               "SRA_ALLOWED_TOKENS": "allowed_tokens", "SRA_LOOKALIKE_CHECK": "lookalike_check",
+               "SRA_NEW_COUNTERPARTY": "new_counterparty"}
 _POLICY_CACHE: dict = {}
 
 
@@ -573,7 +618,15 @@ def _spend_guard() -> Optional[SpendGuard]:
 def _with_guard(kw: dict[str, Any]) -> dict[str, Any]:
     g = _spend_guard()
     kw = {**kw, "spend_guard": g} if g is not None else kw
-    return {**kw, "lookalike_check": _lookalike_check()}
+    return {**kw, "lookalike_check": _lookalike_check(), "new_counterparty": _new_counterparty()}
+
+
+def _new_counterparty() -> str:
+    """SRA_NEW_COUNTERPARTY (or the policy file's new_counterparty): "hold" when unset. Raises on anything else."""
+    found, v = _from_policy("SRA_NEW_COUNTERPARTY")
+    if not found:
+        v = (os.environ.get("SRA_NEW_COUNTERPARTY") or "").strip() or "hold"
+    return parse_new_counterparty(v)
 
 
 def _lookalike_check() -> str:
@@ -660,13 +713,14 @@ def _rules_verdict(chain_id: int, sender: str, recipient: str, amount: float,
     try:
         gate = _gate()
         lookalike = _lookalike_check()
+        new_payees = _new_counterparty()
     except Exception as e:  # e.g. SRA_DEPEG_HOLD_PCT >= SRA_DEPEG_REJECT_PCT, or a bad address list
         return _config_error(e)
     try:
         v = gate.inspect(TransactionPayload(
             chain_id=chain_id, token=token, sender=sender, recipient=recipient,
             amount=amount, peg_deviation_pct=peg_deviation_pct,
-        ), blocked_addresses=blocked_addresses, lookalike_check=lookalike)
+        ), blocked_addresses=blocked_addresses, lookalike_check=lookalike, new_counterparty=new_payees)
     except Exception as e:  # malformed address, self-transfer, bad amount...
         return {
             "decision": "reject", "risk_score": 1.0, "flags": ["invalid_payment"],
@@ -677,27 +731,38 @@ def _rules_verdict(chain_id: int, sender: str, recipient: str, amount: float,
 
 
 
-def _with_claims(verdict: dict[str, Any], untrusted_text: Any) -> dict[str, Any]:
-    """Hold an otherwise approved or held payment whose untrusted text claims its own verification."""
+def _with_claims(verdict: dict[str, Any], untrusted_text: Any, recipient: Any = None,
+                 sender: Any = None) -> dict[str, Any]:
+    """Hold an otherwise approved or held payment whose untrusted text claims its own verification, or asks to pay
+    a new or different address (PAYEE_CHANGE_REQUEST, 0.19.0+)."""
     if untrusted_text is None or verdict.get("decision") == "reject":
         return verdict
     try:
         claims = scan_payload_claims(untrusted_text)
+        change = scan_payee_change(untrusted_text, recipient=recipient, sender=sender)
     except Exception:  # fail closed
         return {**verdict, "decision": "hold", "risk_score": max(verdict.get("risk_score", 0), 0.65),
                 "flags": ["check_failed"] + list(verdict.get("flags", [])),
                 "explanation": "The payment text could not be scanned, so the payment is held.",
                 "required_actions": ["manual_review"]}
-    if not claims:
+    if not claims and not change:
         return verdict
-    why = (f"The payment text claims its own verification ({claims[0].match!r}). A payer cannot grade "
-           "its own risk; verify with real tools before paying.")
+    flags, whys = [], []
+    if claims:
+        flags += [CLAIMS_FLAG] + [c.rule for c in claims]
+        whys.append(f"The payment text claims its own verification ({claims[0].match!r}). A payer cannot grade "
+                    "its own risk; verify with real tools before paying.")
+    if change:
+        flags += [PAYEE_CHANGE_FLAG] + [c.rule for c in change if c.rule not in flags]
+        whys.append(f"The payment text asks to pay a new or different address ({change[0].match!r}). Confirm the "
+                    "payee through a channel you already trust, never through the request itself.")
+    why = " ".join(whys)
     if verdict.get("decision") == "hold":
         why += " Also: " + str(verdict.get("explanation", ""))
     return {**verdict, "decision": "hold", "risk_score": max(verdict.get("risk_score", 0), 0.65),
-            "flags": [CLAIMS_FLAG] + [c.rule for c in claims] + [f for f in verdict.get("flags", []) if f != CLAIMS_FLAG],
+            "flags": flags + [f for f in verdict.get("flags", []) if f not in flags],
             "explanation": why[:600], "required_actions": ["manual_review"],
-            "claims": [{"rule": c.rule, "match": c.match} for c in claims]}
+            "claims": [{"rule": c.rule, "match": c.match} for c in claims + change]}
 
 MAX_ADDRESSES = 100
 
@@ -842,7 +907,8 @@ def check_payment_rules(
         chains = ", ".join(str(c) for c in sorted(STABLECOINS[sym]))
         return _hold("unsupported_chain", f"Chain {chain_id} is not checked for {sym}; supported: {chains}.")
     verdict = _rules_verdict(chain_id, sender, recipient, amount_usdc, peg_deviation_pct, blocked, sym)
-    verdict = _with_claims(_with_screening(verdict, screening, chain_id, sender, recipient), untrusted_text)
+    verdict = _with_claims(_with_screening(verdict, screening, chain_id, sender, recipient), untrusted_text,
+                           recipient, sender)
     return _with_budget(verdict, screening.get("spend_guard"), chain_id, sender, recipient, amount_usdc, sym)
 
 
@@ -918,7 +984,7 @@ def check_x402_payment(
     verdict = _with_screening(_rules_verdict(chain_id, payer, pay_to, float(usdc), peg_deviation_pct, blocked),
                               screening, chain_id, payer, pay_to)
     verdict["amount_usdc"] = str(usdc)
-    verdict = _with_claims(verdict, untrusted_text)
+    verdict = _with_claims(verdict, untrusted_text, pay_to, payer)
     return _with_budget(verdict, screening.get("spend_guard"), chain_id, payer, pay_to, float(usdc))
 
 
@@ -1365,6 +1431,46 @@ def verify_receipt(
         out["tool"] = (receipt.get("payment") or {}).get("tool")
     else:
         out["reason"] = "The receipt was changed after it was issued, or was not signed with this server's key."
+    return out
+
+
+@mcp.tool(annotations=CHECK_ONLY)
+def verify_receipt_chain(
+    receipts: Annotated[Optional[list[dict]], Field(description=(
+        "Receipts oldest first, exactly as the payment tools returned them. Omit to check this server's own "
+        "SRA_RECEIPT_CHAIN_FILE."))] = None,
+) -> dict[str, Any]:
+    """Check a chain of decision receipts (approve, hold or reject) signed with this server's SRA_RECEIPT_KEY (0.19.0+).
+
+    Valid only if every receipt is intact and each links to the one before it, so an edited, deleted, inserted or
+    reordered decision is detected. Receipts cut off the end of a chain are not detectable from the chain alone.
+    """
+    try:
+        signer = _receipt_signer()
+    except Exception as e:
+        return {"valid": False, "reason": f"SRA_RECEIPT_KEY is misconfigured: {e}"[:300]}
+    if signer is None:
+        return {"valid": False, "reason": "This server has no SRA_RECEIPT_KEY, so it cannot verify receipts."}
+    if receipts is None:
+        path = (os.environ.get("SRA_RECEIPT_CHAIN_FILE") or "").strip()
+        if not path:
+            return {"valid": False, "reason": "No receipts given and no SRA_RECEIPT_CHAIN_FILE is set."}
+        try:
+            receipts = _read_chain(os.path.expanduser(path))
+        except Exception as e:
+            return {"valid": False, "reason": f"SRA_RECEIPT_CHAIN_FILE could not be read ({type(e).__name__})."}
+    rows = [r["receipt"] if isinstance(r, dict) and isinstance(r.get("receipt"), dict) else r for r in receipts]
+    raw = os.environ["SRA_RECEIPT_KEY"].strip()
+    try:
+        key = bytes.fromhex(raw[2:] if raw.lower().startswith("0x") else raw)
+    except ValueError:
+        key = base64.b64decode(raw, validate=True)
+    res = sdk_verify_receipt_chain(rows, key=key)
+    out: dict[str, Any] = {"valid": res.ok, "checked": res.checked}
+    if not res.ok:
+        out.update({"bad_index": res.bad_index, "reason": res.reason})
+    elif rows:
+        out["last_receipt_sha256"] = __import__("sra_riskgate").receipt_sha256(rows[-1])
     return out
 
 

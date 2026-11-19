@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.19.0 — 2026-11-19
+
+- **Payee-change requests** (`PAYEE_CHANGE_REQUEST`, hold): in every tool that takes `untrusted_text`, a text
+  that asks to pay a new or different address ("our wallet address has changed", "send it to our new address",
+  "do not use the old address"), or that names an address other than the payee, holds the payment
+  (sra-riskgate 1.11.0). Checked on the published benchmarks: 0 of 3,509 legitimate payments flagged.
+- **`SRA_NEW_COUNTERPARTY=allow`** (or `new_counterparty` in `SRA_POLICY_FILE`): keeps the look-alike check against
+  `SRA_KNOWN_RECIPIENTS` without holding every payee not in the list. Default `hold`, unchanged.
+- **Chained receipts**: with `SRA_RECEIPT_KEY` and `SRA_RECEIPT_CHAIN_FILE`, every receipt signs the hash of the one
+  before it and is appended to that file. New tool **`verify_receipt_chain`** checks a list of receipts, or the
+  server's own chain file, for edited, deleted, inserted or reordered decisions. An unreadable chain file holds
+  the payment (`receipt_failed`), like any receipt that cannot be signed.
+- Requires sra-riskgate 1.11.0.
+
 ## 0.18.1 — 2026-11-18
 
 - Requires sra-riskgate 1.10.1 (Audit #19/#20): with `SRA_ELLIPTIC_API_KEY` set, a sanctions listing inside the
