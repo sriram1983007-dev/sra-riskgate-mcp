@@ -25,6 +25,7 @@ and USDG once the server enables them with `SRA_ALLOWED_TOKENS`.
 | `verify_gateway_balances` | **After** a Circle Gateway payment: the payer's Gateway balance went down, and the payee's up, by at least the amount; reports when the batch has not settled yet | Nothing (you pass the balances) |
 | `check_dispute_verdict` | A dispute verdict (from the model or anyone) against the dispute window, recomputed from the dates: a deny or dismiss resting on a false "outside the window" claim becomes `escalate_to_human`, never a refund. On the benchmark it lowers wrongful denials from 26.0% to 0.85% (55.3% to 0.85% on the Q4_K_M build) | Nothing (you pass the dispute and the verdict) |
 | `verify_receipt` | Checks that a decision receipt (0.17.0+, with `SRA_RECEIPT_KEY`) is intact and was signed by this server | `SRA_RECEIPT_KEY` |
+| `verify_receipt_chain` | Checks a chain of receipts (0.19.0+): none edited, deleted, inserted or reordered. With no arguments, checks the server's own `SRA_RECEIPT_CHAIN_FILE` | `SRA_RECEIPT_KEY` |
 | `check_payment_with_model` | Full review by [SRA-RiskGate-4B](https://huggingface.co/sriram1983007/SRA-RiskGate-4B) of the policy, the payment and your verification results | The model running locally |
 
 Every tool fails closed. Malformed input is rejected, and if the model is unreachable or answers
@@ -137,6 +138,8 @@ ollama pull sriram1983007/sra-riskgate
 | `SRA_KNOWN_RECIPIENTS` | unset (check off) | Verified payees, comma- or space-separated. Payments to anyone else are held (`NEW_COUNTERPARTY`). Set but empty: every payment is held |
 | `SRA_KNOWN_RECIPIENTS_FILE` | unset | A file with one verified payee per line (`#` comments allowed), added to the list above |
 | `SRA_LOOKALIKE_CHECK` | `standard` | `strict` (0.18.0+) also rejects a payee imitating a known one by only 3 characters at each end. Needs `SRA_KNOWN_RECIPIENTS` |
+| `SRA_NEW_COUNTERPARTY` | `hold` | `allow` (0.19.0+) keeps the look-alike check against `SRA_KNOWN_RECIPIENTS` but no longer holds every payee not in the list: for agents that pay many new services |
+| `SRA_RECEIPT_CHAIN_FILE` | unset | With `SRA_RECEIPT_KEY`: a JSON Lines file (0.19.0+). Each receipt is linked to the one before it and appended, so a deleted or reordered decision is detectable |
 | `SRA_BLOCKED_ADDRESSES` / `SRA_BLOCKED_ADDRESSES_FILE` | unset | Addresses to always reject, same formats |
 | `SRA_MAX_AUTH_VALIDITY_SECONDS` | `3600` | Longest an x402 authorization may stay valid before it is held |
 | `SRA_MAX_GATEWAY_VALIDITY_SECONDS` | `691200` (8 days) | The same for Circle Gateway batched payments, which must stay valid for at least 3 days |
@@ -227,6 +230,14 @@ smart-account batch counts once, as a whole. A corrupt ledger holds every paymen
 
 With `SRA_RECEIPT_KEY`, every payment decision carries a signed `receipt`: the decision, flags, explanation, the
 tool's inputs, the policy's hash and the time. `verify_receipt` checks it later; change any field and it is invalid.
+With `SRA_RECEIPT_CHAIN_FILE` too (0.19.0+), each receipt also signs the hash of the one before it and is appended to
+that file, so `verify_receipt_chain` (or `sra-riskgate receipt verify-chain FILE --key-env SRA_RECEIPT_KEY`) also
+catches a decision that was deleted, inserted or reordered. Keep the latest `last_receipt_sha256` somewhere else as
+well: entries cut off the end of a chain are not detectable from the chain alone.
+
+A payment text that asks to pay a new or different address ("our wallet address has changed", "send it to our new
+address", or an address in the text that is not the payee) is held as `PAYEE_CHANGE_REQUEST` (0.19.0+), next to
+the self-approval check, in every tool that takes `untrusted_text`.
 
 `SRA_POLICY_FILE` keeps all of this in one reviewed file instead of environment variables (see the
 [policy format](https://github.com/sriram1983007-dev/sra-riskgate#one-policy-file-for-every-check-180)). API keys
