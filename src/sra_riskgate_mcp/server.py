@@ -16,6 +16,8 @@ Tools:
   check_dispute_verdict      a dispute verdict against the dispute window; false window claims are escalated
   verify_receipt             a decision receipt (with SRA_RECEIPT_KEY) is intact and was signed by this server
   verify_receipt_chain       a chain of receipts (SRA_RECEIPT_CHAIN_FILE) has no edited, missing or reordered entry
+  receipt_audit_report       an audit report from verified receipts: decisions, flags, payees, OWASP risks (0.20.0+)
+  scan_wallet_for_poisoning  look-alike addresses already planted in a wallet's history, via SRA_RPC_URL (0.20.0+)
 
 Configuration (environment variables):
   SRA_BASE_URL       OpenAI-compatible endpoint for the model (default: Ollama, http://localhost:11434/v1)
@@ -42,6 +44,8 @@ Configuration (environment variables):
   SRA_RECEIPT_CHAIN_FILE  with SRA_RECEIPT_KEY, a JSON Lines file (0.19.0+): every receipt is linked to the one
                      before it (prev_sha256) and appended, so an edited, deleted or reordered decision is
                      detectable (verify_receipt_chain tool, or `sra-riskgate receipt verify-chain`).
+  SRA_RPC_URL        JSON-RPC endpoint for scan_wallet_for_poisoning (0.20.0+). Server setting only: the agent
+                     cannot choose where the scan connects. Unset: the scan tool reports that it is not configured.
   SRA_MAX_AUTH_VALIDITY_SECONDS  longest an x402 authorization may stay valid before it is held (default: 3600)
   SRA_MAX_GATEWAY_VALIDITY_SECONDS  the same for Circle Gateway batched payments, which Gateway requires
                      to stay valid for at least 3 days (default: 691200, 8 days; Circle's SDK signs for
@@ -788,6 +792,8 @@ SCREENED = ToolAnnotations(readOnlyHint=not _RECORDS, destructiveHint=False, ide
                            openWorldHint=any(_env_set(n) for n in _SCREENING_ENV) or "screening" in _P0)
 CHECK_WITH_MODEL = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True,
                                    openWorldHint=True)
+# The scan reads a blockchain node: open-world, but it changes nothing.
+READS_CHAIN = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 
 
 @mcp.tool(annotations=CHECK_ONLY)
@@ -1472,6 +1478,104 @@ def verify_receipt_chain(
     elif rows:
         out["last_receipt_sha256"] = __import__("sra_riskgate").receipt_sha256(rows[-1])
     return out
+
+
+def _receipt_key() -> bytes:
+    raw = os.environ["SRA_RECEIPT_KEY"].strip()
+    try:
+        return bytes.fromhex(raw[2:] if raw.lower().startswith("0x") else raw)
+    except ValueError:
+        return base64.b64decode(raw, validate=True)
+
+
+@mcp.tool(annotations=CHECK_ONLY)
+def receipt_audit_report(
+    receipts: Annotated[Optional[list[dict]], Field(description=(
+        "Receipts oldest first, exactly as the payment tools returned them. Omit to report on this server's own "
+        "SRA_RECEIPT_CHAIN_FILE."))] = None,
+    include_markdown: Annotated[bool, Field(description="Also return the report as Markdown, ready to share.")] = False,
+) -> dict[str, Any]:
+    """An audit report from this server's signed decision receipts (0.20.0+, sra-riskgate 1.12.0's audit_report).
+
+    Only receipts that verify against SRA_RECEIPT_KEY are counted: decisions (approve, hold, reject) by tool, flags,
+    payees and amounts, the OWASP LLM / Agentic risks each flag addresses, the policies used, and whether the chain
+    is intact. Receipts that do not verify are listed and excluded. A receipt proves what the gate decided, not that
+    a payment was sent.
+    """
+    from sra_riskgate import audit_report, audit_report_markdown
+    try:
+        signer = _receipt_signer()
+    except Exception as e:
+        return {"ok": False, "reason": f"SRA_RECEIPT_KEY is misconfigured: {e}"[:300]}
+    if signer is None:
+        return {"ok": False, "reason": "This server has no SRA_RECEIPT_KEY, so it cannot verify receipts."}
+    if receipts is None:
+        path = (os.environ.get("SRA_RECEIPT_CHAIN_FILE") or "").strip()
+        if not path:
+            return {"ok": False, "reason": "No receipts given and no SRA_RECEIPT_CHAIN_FILE is set."}
+        try:
+            receipts = _read_chain(os.path.expanduser(path))
+        except Exception as e:
+            return {"ok": False, "reason": f"SRA_RECEIPT_CHAIN_FILE could not be read ({type(e).__name__})."}
+    rows = [r["receipt"] if isinstance(r, dict) and isinstance(r.get("receipt"), dict) else r for r in receipts]
+    try:
+        rep = audit_report(rows, key=_receipt_key(), title="sra-riskgate-mcp decisions")
+    except Exception as e:
+        return {"ok": False, "reason": f"The report could not be built ({type(e).__name__}: {e})"[:300]}
+    chain = rep.get("chain") or {}
+    out: dict[str, Any] = {"ok": rep["receipts"] > 0 and rep["invalid"] == 0
+                           and (not chain.get("chained") or bool(chain.get("intact"))), "report": rep}
+    if include_markdown:
+        out["markdown"] = audit_report_markdown(rep)
+    return out
+
+
+_MAX_SCAN_BLOCKS = 1_000_000
+_SCAN_MAX_REQUESTS = 1000  # RPC request budget per scan
+
+
+@mcp.tool(annotations=READS_CHAIN)
+def scan_wallet_for_poisoning(
+    wallet: Annotated[str, Field(description="The wallet address to scan (0x + 40 hex characters).")],
+    blocks: Annotated[int, Field(description="How many recent blocks to read (default 200000: about a month on "
+                                             "Ethereum, under a week on Base; at most 1000000).")] = 200_000,
+) -> dict[str, Any]:
+    """Find look-alike addresses already planted in a wallet's history (address poisoning), before anyone copies one.
+
+    Reads the wallet's ERC-20 Transfer events through this server's SRA_RPC_URL and reports every address imitating
+    one of its payees (the addresses it paid in a listed stablecoin, plus SRA_KNOWN_RECIPIENTS), labelled
+    zero_value_transfer, fake_token or dust_received, with transactions; and payees it already paid that look like
+    each other. Uses the strict look-alike rule. Tell the user the findings and suggest adding blocked_addresses to
+    SRA_BLOCKED_ADDRESSES; never pay or approve a payment to an address listed here. complete false means the range was not fully read, so
+    'no findings' is not a clean result. 0.20.0+, sra-riskgate 1.14.0's scan_wallet.
+    """
+    from sra_riskgate.scan import ScanError, scan_wallet
+    url = (os.environ.get("SRA_RPC_URL") or "").strip()
+    if not url:
+        return {"ok": False, "reason": "This server has no SRA_RPC_URL, so it cannot read the chain. Ask the user to "
+                                       "set SRA_RPC_URL to a JSON-RPC endpoint for the wallet's chain."}
+    if not isinstance(blocks, int) or isinstance(blocks, bool) or not 1 <= blocks <= _MAX_SCAN_BLOCKS:
+        return {"ok": False, "reason": f"blocks must be between 1 and {_MAX_SCAN_BLOCKS}."}
+    try:
+        known = _address_env("SRA_KNOWN_RECIPIENTS")
+    except Exception as e:
+        return {"ok": False, "reason": f"SRA_KNOWN_RECIPIENTS could not be read: {e}"[:300]}
+    try:
+        r = scan_wallet(wallet, rpc_url=url, blocks=blocks, known_payees=known, lookalike_check="strict",
+                        max_requests=_SCAN_MAX_REQUESTS)
+    except ValueError as e:
+        return {"ok": False, "reason": str(e)[:300]}
+    except ScanError as e:  # never echo the URL: it may carry an API key
+        return {"ok": False, "reason": f"The RPC could not be read: {str(e).replace(url, '<SRA_RPC_URL>')[:300]}"}
+    r.pop("payee_addresses", None)
+    found = bool(r["findings"] or r["suspicious_payees"])
+    return {"ok": True, "found": found, **r,
+            "next_step": ("Do not pay any address in blocked_addresses. Ask the user to add them to "
+                          "SRA_BLOCKED_ADDRESSES." if r["findings"] else
+                          "Confirm both addresses in each suspicious_payees pair with the user before paying either."
+                          if r["suspicious_payees"] else
+                          "No look-alikes found in the range read." if r["complete"] else
+                          "The scan stopped before reading the whole range; this is not a clean result.")}
 
 
 @mcp.tool(annotations=CHECK_ONLY)

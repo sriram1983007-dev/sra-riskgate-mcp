@@ -195,7 +195,7 @@ def test_payment_tools_are_open_world_only_when_screening_is_configured(monkeypa
         importlib.reload(server)
         tools = {t.name: _annotations(t) for t in asyncio.run(server.mcp.list_tools())}
         for name, a in tools.items():
-            assert a["openWorldHint"] is (name in payment or name == "check_payment_with_model"), name
+            assert a["openWorldHint"] is (name in payment or name in ("check_payment_with_model", "scan_wallet_for_poisoning")), name
             assert a["readOnlyHint"] is True and a["destructiveHint"] is False
     finally:
         monkeypatch.delenv("SRA_RANGE_API_KEY")
