@@ -157,12 +157,12 @@ def _annotations(tool):
 
 def test_every_tool_declares_all_four_hints():  # every tool, all four hints
     tools = {t.name: _annotations(t) for t in asyncio.run(server.mcp.list_tools())}
-    assert len(tools) == 15
+    assert len(tools) == 17
     for name, a in tools.items():
         assert a.get("readOnlyHint") is True, name
         assert a.get("destructiveHint") is False, name
         assert a.get("idempotentHint") is True, name
-        assert a.get("openWorldHint") is (name == "check_payment_with_model"), name
+        assert a.get("openWorldHint") is (name in ("check_payment_with_model", "scan_wallet_for_poisoning")), name
 
 
 def test_sanctions_tool_reports_list_age():

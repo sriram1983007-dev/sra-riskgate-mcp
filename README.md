@@ -26,6 +26,8 @@ and USDG once the server enables them with `SRA_ALLOWED_TOKENS`.
 | `check_dispute_verdict` | A dispute verdict (from the model or anyone) against the dispute window, recomputed from the dates: a deny or dismiss resting on a false "outside the window" claim becomes `escalate_to_human`, never a refund. On the benchmark it lowers wrongful denials from 26.0% to 0.85% (55.3% to 0.85% on the Q4_K_M build) | Nothing (you pass the dispute and the verdict) |
 | `verify_receipt` | Checks that a decision receipt (0.17.0+, with `SRA_RECEIPT_KEY`) is intact and was signed by this server | `SRA_RECEIPT_KEY` |
 | `verify_receipt_chain` | Checks a chain of receipts (0.19.0+): none edited, deleted, inserted or reordered. With no arguments, checks the server's own `SRA_RECEIPT_CHAIN_FILE` | `SRA_RECEIPT_KEY` |
+| `receipt_audit_report` | An audit report from verified receipts (0.20.0+): decisions by tool, flags, payees and amounts, the OWASP LLM / Agentic risks each flag addresses, and whether the chain is intact; receipts that do not verify are excluded. Optional Markdown to share | `SRA_RECEIPT_KEY` |
+| `scan_wallet_for_poisoning` | Finds look-alike addresses already planted in a wallet's history (0.20.0+): each address imitating one of its payees, how it was planted (zero-value transfer, fake token, dust) and the transactions, plus payees already paid that look like each other | `SRA_RPC_URL` |
 | `check_payment_with_model` | Full review by [SRA-RiskGate-4B](https://huggingface.co/sriram1983007/SRA-RiskGate-4B) of the policy, the payment and your verification results | The model running locally |
 
 Every tool fails closed. Malformed input is rejected, and if the model is unreachable or answers
@@ -139,6 +141,7 @@ ollama pull sriram1983007/sra-riskgate
 | `SRA_KNOWN_RECIPIENTS_FILE` | unset | A file with one verified payee per line (`#` comments allowed), added to the list above |
 | `SRA_LOOKALIKE_CHECK` | `standard` | `strict` (0.18.0+) also rejects a payee imitating a known one by only 3 characters at each end. Needs `SRA_KNOWN_RECIPIENTS` |
 | `SRA_NEW_COUNTERPARTY` | `hold` | `allow` (0.19.0+) keeps the look-alike check against `SRA_KNOWN_RECIPIENTS` but no longer holds every payee not in the list: for agents that pay many new services |
+| `SRA_RPC_URL` | unset | JSON-RPC endpoint for `scan_wallet_for_poisoning` (0.20.0+). A server setting: the agent passes only the wallet and the number of blocks, never where to connect. The URL is never included in tool output |
 | `SRA_RECEIPT_CHAIN_FILE` | unset | With `SRA_RECEIPT_KEY`: a JSON Lines file (0.19.0+). Each receipt is linked to the one before it and appended, so a deleted or reordered decision is detectable |
 | `SRA_BLOCKED_ADDRESSES` / `SRA_BLOCKED_ADDRESSES_FILE` | unset | Addresses to always reject, same formats |
 | `SRA_MAX_AUTH_VALIDITY_SECONDS` | `3600` | Longest an x402 authorization may stay valid before it is held |
@@ -260,14 +263,32 @@ spend your agent's budget. `receipt verify` lets an auditor or a finance team ch
 with no server and no model. `check` only reads the policy file, not the server's other `SRA_` variables, so it
 matches the server when the policy file holds your settings.
 
+### Who is already targeting this wallet? (0.20.0+)
+
+Address poisoning plants a look-alike of one of your payees in the wallet's history, then waits for an agent or a
+person to copy it. The payment tools reject that payment (`LOOKALIKE_RECIPIENT`); `scan_wallet_for_poisoning`
+finds the look-alikes before anyone tries:
+
+```json
+"env": { "SRA_RPC_URL": "https://your-ethereum-rpc", "SRA_KNOWN_RECIPIENTS": "0xYourPayee..." }
+```
+
+Ask the agent "scan my wallet 0x… for poisoning". It reads the wallet's ERC-20 transfers over standard JSON-RPC,
+uses the strict look-alike rule (every attack shape among the 179 real attacks in the
+[real-world dataset](https://huggingface.co/datasets/sriram1983007/sra-real-world-poisoning)), and returns
+`blocked_addresses` with a `next_step` telling the agent to ask you to add them to `SRA_BLOCKED_ADDRESSES`. The agent
+cannot change that setting itself. `complete: false` means the range was not fully read, so no findings is not a
+clean result. The same scan runs from a terminal with `uvx sra-riskgate scan 0x… --rpc URL --write-policy p.json`.
+
 ## Tool annotations
 
 Every tool declares MCP tool annotations, so clients know none of them sends or signs anything:
 `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`. With a budget configured (0.17.0+), the six
 payment tools record approved payments in the local ledger, so they declare `readOnlyHint: false` and
 `idempotentHint: false`. `openWorldHint` is `true` only for
-`check_payment_with_model`, which calls your model endpoint, and, when a screening provider is configured, for
-the six payment tools, which then call it. Everything else runs entirely offline.
+`check_payment_with_model`, which calls your model endpoint, `scan_wallet_for_poisoning`, which reads your
+`SRA_RPC_URL` node, and, when a screening provider is configured, for the six payment tools, which then call it.
+Everything else runs entirely offline.
 
 ## How agents should use it
 

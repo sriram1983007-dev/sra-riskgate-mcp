@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.20.0 — 2026-11-21
+
+- **New tool `scan_wallet_for_poisoning`** (sra-riskgate 1.14.0): finds look-alike addresses already planted in a
+  wallet's history, through the server's own **`SRA_RPC_URL`**. Returns each look-alike, the payee it imitates
+  (payees the wallet has paid, plus `SRA_KNOWN_RECIPIENTS`), how it was planted (`zero_value_transfer`,
+  `fake_token`, `dust_received`) and the transactions, plus payees already paid that look like each other. Strict
+  rule. The agent passes only the wallet and a block count (at most 1,000,000), never a URL, and the URL is never
+  echoed in output. `complete: false` is reported, not hidden, when the request budget runs out.
+- **New tool `receipt_audit_report`** (sra-riskgate 1.12.0): an audit report from the server's chain file or a list
+  of receipts, counting only receipts that verify against `SRA_RECEIPT_KEY`; optional Markdown.
+- `scan_wallet_for_poisoning` declares `openWorldHint: true`; every tool still declares `readOnlyHint: true` and
+  `destructiveHint: false`.
+- Requires sra-riskgate 1.14.0. No payment decision changes.
+
 ## 0.19.0 — 2026-11-19
 
 - **Payee-change requests** (`PAYEE_CHANGE_REQUEST`, hold): in every tool that takes `untrusted_text`, a text
