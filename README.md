@@ -5,6 +5,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![M8ven Verified](https://m8ven.ai/badge/mcp/sriram1983007-dev-sra-riskgate-mcp-1vnq1q?v=2728cabf723fc8d83e26ea48cd6c398e&variant=verified)](https://m8ven.ai/mcp/sriram1983007-dev-sra-riskgate-mcp-1vnq1q?s=readme)
 [![mcprush Grade A](https://img.shields.io/badge/mcprush-Grade_A_%C2%B7_98%2F100-c6f36b)](https://mcprush.com/sriram1983007-dev/sra-riskgate-mcp)
+[![sriram1983007-dev/sra-riskgate-mcp MCP server](https://glama.ai/mcp/servers/sriram1983007-dev/sra-riskgate-mcp/badges/score.svg)](https://glama.ai/mcp/servers/sriram1983007-dev/sra-riskgate-mcp)
 
 **The pre-sign firewall for AI agents that pay.** An [MCP](https://modelcontextprotocol.io) server that lets AI
 assistants and agents check a stablecoin payment **before** paying it: `approve`, `hold` or `reject`. USDC by default; from 0.13.0 also USDT, USDB (Bridge)
